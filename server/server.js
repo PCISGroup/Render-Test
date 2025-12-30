@@ -43,7 +43,10 @@ const upload = multer({
 
 // Middleware
 app.use(cors({
-  origin: process.env.CORS_ORIGIN || 'http://localhost:5173',
+  origin: [
+    'http://localhost:5173',
+    'https://render-test-frontend-da9h.onrender.com'
+  ],
   credentials: true
 }));
 app.use(express.json());
@@ -179,12 +182,13 @@ async function requireSession(req, res, next) {
   next();
 }
 
-// Middleware
 app.use(cors({
-  origin: process.env.CORS_ORIGIN || 'http://localhost:5173',
+  origin: [
+    'http://localhost:5173',
+    'https://render-test-frontend-da9h.onrender.com' 
+  ],
   credentials: true
 }));
-app.use(express.json());
 
 // Health check
 app.get('/api/health', (req, res) => {
