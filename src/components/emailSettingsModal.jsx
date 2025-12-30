@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { X, Mail, Users, Calendar, Send, CheckCircle, AlertCircle, Plus, Trash2, Wifi, WifiOff } from 'lucide-react';
 import './emailModal.css';
 
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:5001';
+const API_BASE_URL = import.meta.env.VITE_API_URL;
 
 // Email validation regex
 const EMAIL_REGEX = /^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$/;

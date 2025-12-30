@@ -4,7 +4,7 @@ import './Analytics.css';
 import SearchableFilter from "../components/SearchableFilters";
 import { supabase } from '../lib/supabaseClient';
 
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:5001';
+const API_BASE_URL = import.meta.env.VITE_API_URL;
 
 const useFetchWithRetry = (endpoint, options = {}, retries = 3) => {
   const [data, setData] = useState(null);

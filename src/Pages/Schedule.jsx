@@ -24,7 +24,7 @@ import { Mail, Settings, Send } from 'lucide-react';
 import ScheduleTable from "../components/ScheduleTable";
 import EmailSettingsModal from '../components/emailSettingsModal';
 
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:5001';
+const API_BASE_URL = import.meta.env.VITE_API_URL;
 
 const useFetchWithRetry = (endpoint, options = {}, retries = 3) => {
   const [data, setData] = useState(null);

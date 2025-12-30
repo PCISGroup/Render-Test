@@ -3,7 +3,7 @@ import { Plus, Users, Trash2, Pencil, X } from 'lucide-react';
 import { supabase } from '../lib/supabaseClient'; // Add this import
 import './Employees.css';
 
-const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:5001';
+const API_BASE = import.meta.env.VITE_API_URL;
 
 export default function Employees() {
   const [employees, setEmployees] = useState([]);
