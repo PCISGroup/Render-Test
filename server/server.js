@@ -185,7 +185,7 @@ async function requireSession(req, res, next) {
 app.use(cors({
   origin: [
     'http://localhost:5173',
-    'https://render-test-frontend-da9h.onrender.com' 
+    'https://lovely-faloodeh-8a93b0.netlify.app'
   ],
   credentials: true
 }));
