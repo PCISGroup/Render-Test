@@ -13,16 +13,50 @@ dotenv.config();
 
 console.log("🔍 DEBUG - DB_URL:", process.env.DB_URL ? "Present" : "Missing");
 console.log("🔍 DEBUG - NODE_ENV:", process.env.NODE_ENV);
+console.log("🔍 DEBUG - VITE_SUPABASE_URL:", process.env.VITE_SUPABASE_URL ? "Present" : "Missing");
+console.log("🔍 DEBUG - SUPABASE_SERVICE_ROLE_KEY:", process.env.SUPABASE_SERVICE_ROLE_KEY ? "Present" : "Missing");
 
 const app = express();
 const PORT = process.env.PORT || 5001;
 
-// Configure multer for file uploads
+// ========== MIDDLEWARE MUST COME FIRST ==========
+app.use(cors({
+  origin: [
+    'http://localhost:5173',
+    'https://lovely-faloodeh-8a93b0.netlify.app'
+  ],
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'Accept']
+}));
+
+// Handle preflight requests
+app.options('*', cors());
+
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+app.use(cookieParser());
+
+// Session middleware
+app.use(session({
+  name: 'sid',
+  secret: process.env.SESSION_SECRET || 'change_this_secret_in_production',
+  resave: false,
+  saveUninitialized: false,
+  cookie: {
+    maxAge: 24 * 60 * 60 * 1000, // 1 day
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
+    httpOnly: true
+  }
+}));
+
+// ========== CONFIGURE MULTER ==========
 const storage = multer.memoryStorage();
 const upload = multer({
   storage: storage,
   limits: {
-    fileSize: 5 * 1024 * 1024, // 5MB limit
+    fileSize: 5 * 1024 * 1024, // 5MB
   },
   fileFilter: (req, file, cb) => {
     const allowedTypes = [
@@ -41,158 +75,193 @@ const upload = multer({
   }
 });
 
-// Cookie & session middleware (for MSAL server-side auth)
-app.use(cookieParser());
-app.use(session({
-  name: 'sid',
-  secret: process.env.SESSION_SECRET || 'change_this_secret',
-  resave: false,
-  saveUninitialized: false,
-  cookie: {
-    maxAge: 24 * 60 * 60 * 1000, // 1 day
-    secure: process.env.NODE_ENV === 'production'
-  }
-}));
-
-// Legacy MSAL server routes removed — using Supabase OAuth via client/supabase dashboard
-
-// Health check
+// ========== HEALTH CHECK ==========
 app.get('/api/health', (req, res) => {
   res.json({
     status: 'OK',
     timestamp: new Date().toISOString(),
     environment: process.env.NODE_ENV,
-    database: 'PostgreSQL'
+    database: 'PostgreSQL',
+    cors: {
+      origins: ['http://localhost:5173', 'https://lovely-faloodeh-8a93b0.netlify.app'],
+      enabled: true
+    }
   });
 });
 
-// Server-side login: validate Supabase access token, create session cookie, upsert employee
-/*
+// ========== AUTH ROUTES ==========
+const ALLOWED_EMAILS = ['info@pcis.group', 'se.admin@pcis.group'];
+
+// Login endpoint
 app.post('/api/auth/login', async (req, res) => {
+  console.log('🔐 Login attempt received');
+  
+  const { access_token } = req.body;
+  if (!access_token) {
+    console.warn('❌ No access token provided');
+    return res.status(400).json({ error: 'Access token required' });
+  }
+
   try {
-    const { access_token } = req.body;
-    if (!access_token) return res.status(400).json({ error: 'access_token required' });
-
-    if (!supabaseAdmin) return res.status(500).json({ error: 'Supabase admin not configured on server' });
-
+    // Validate token with Supabase
+    console.log('🔍 Validating token with Supabase...');
     const { data, error } = await supabaseAdmin.auth.getUser(access_token);
+    
     if (error || !data?.user) {
-      console.warn('Invalid access token provided to /api/auth/login', error?.message || 'no user');
+      console.warn('❌ Invalid token:', error?.message);
       return res.status(401).json({ error: 'Invalid token' });
     }
 
     const user = data.user;
-    // Upsert into employees table
+    const userEmail = user.email.toLowerCase();
+    console.log(`✅ Token valid for: ${userEmail}`);
+
+    // Check if email is allowed
+    if (!ALLOWED_EMAILS.includes(userEmail)) {
+      console.warn(`🚫 Access denied for: ${userEmail}`);
+      return res.status(403).json({ 
+        error: 'Access denied. Your email is not authorized to access this system.',
+        userEmail: userEmail
+      });
+    }
+
+    // Upsert employee into database
+    console.log('📝 Upserting employee...');
     const upsertSql = `
       INSERT INTO employees (external_id, email, name)
       VALUES ($1, $2, $3)
-      ON CONFLICT (external_id) DO UPDATE SET email = EXCLUDED.email, name = EXCLUDED.name
+      ON CONFLICT (external_id) DO UPDATE SET 
+        email = EXCLUDED.email, 
+        name = EXCLUDED.name,
+        updated_at = CURRENT_TIMESTAMP
       RETURNING id, name, email
     `;
-    const values = [user.id, user.email, user.user_metadata?.full_name || user.user_metadata?.name || user.email];
-    const result = await query(upsertSql, values);
+    
+    const employeeName = user.user_metadata?.full_name || 
+                        user.user_metadata?.name || 
+                        user.email.split('@')[0];
+    
+    const result = await query(upsertSql, [
+      user.id, 
+      userEmail, 
+      employeeName
+    ]);
 
-    // Save session
-    req.session.user = { id: result.rows[0].id, external_id: user.id, email: user.email };
+    const employee = result.rows[0];
+    console.log(`👤 Employee: ${employee.name} (ID: ${employee.id})`);
 
-    res.json({ success: true, employee: result.rows[0] });
-  } catch (err) {
-    console.error('/api/auth/login error:', err);
-    res.status(500).json({ error: 'Login failed' });
-  }
-});*/
+    // Create server session
+    req.session.user = {
+      id: employee.id,
+      external_id: user.id,
+      email: userEmail,
+      name: employee.name,
+      role: 'admin'
+    };
 
-const ALLOWED_EMAILS = ['info@pcis.group', 'se.admin@pcis.group'];
-
-app.post('/api/auth/login', async (req, res) => {
-  const { access_token } = req.body;
-  if (!access_token) return res.status(400).json({ error: 'Token required' });
-
-  try {
-    const { data, error } = await supabaseAdmin.auth.getUser(access_token);
-    if (error || !data?.user) return res.status(401).json({ error: 'Invalid token' });
-
-    const userEmail = data.user.email.toLowerCase();
-
-    if (!ALLOWED_EMAILS.includes(userEmail)) {
-      return res.status(403).json({ error: 'Access denied' });
-    }
-
+    req.session.userId = employee.id;
     req.session.userEmail = userEmail;
     req.session.userRole = 'admin';
 
-    res.json({ success: true, user: { email: userEmail, role: 'admin' } });
+    console.log(`✅ Session created for ${userEmail}`);
+
+    // Send response
+    res.json({ 
+      success: true, 
+      message: 'Login successful',
+      user: {
+        id: employee.id,
+        email: userEmail,
+        name: employee.name,
+        role: 'admin'
+      }
+    });
+
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Internal server error' });
+    console.error('💥 Login error:', err);
+    res.status(500).json({ 
+      error: 'Login failed. Please try again.',
+      details: process.env.NODE_ENV === 'development' ? err.message : undefined
+    });
   }
 });
 
-/*
-function requireSession(req, res, next) {
-  if (req.session && req.session.user) {
-    req.employeeId = req.session.user.id;
-    return next();
-  }
-  return res.status(401).json({ error: 'Unauthorized' });
-}*/
-import { createClient } from '@supabase/supabase-js';
-
-const supabase = createClient(
-  process.env.VITE_SUPABASE_URL,
-  process.env.SUPABASE_SERVICE_ROLE_KEY // server-only
-);
-
-async function requireSession(req, res, next) {
-  console.log('🔐 requireSession checking:', req.path);
-
-  const authHeader = req.headers.authorization;
-  if (!authHeader) {
-    return res.status(401).json({ error: 'No authorization header' });
-  }
-
-  const token = authHeader.startsWith('Bearer ')
-    ? authHeader.slice(7)
-    : authHeader;
-
-  const { data, error } = await supabase.auth.getUser(token);
-
-  if (error || !data.user) {
-    console.error('❌ Supabase auth failed:', error);
-    return res.status(401).json({ error: 'Invalid token' });
-  }
-
-  console.log('✅ Token verified for:', data.user.email);
-
-  req.user = {
-    id: data.user.id,
-    email: data.user.email
-  };
-
-  next();
-}
-
-app.use(cors({
-  origin: [
-    'http://localhost:5173',
-    'https://lovely-faloodeh-8a93b0.netlify.app'
-  ],
-  credentials: true
-}));
-app.use(express.json());
-
-// Health check
-app.get('/api/health', (req, res) => {
-  res.json({
-    status: 'OK',
-    timestamp: new Date().toISOString(),
-    environment: process.env.NODE_ENV,
-    database: 'PostgreSQL'
+// Logout endpoint
+app.post('/api/auth/logout', (req, res) => {
+  req.session.destroy((err) => {
+    if (err) {
+      console.error('Logout error:', err);
+      return res.status(500).json({ error: 'Logout failed' });
+    }
+    
+    res.clearCookie('sid');
+    res.json({ success: true, message: 'Logged out successfully' });
   });
 });
 
-// Get ALL options for dropdown (statuses + clients combined)
-app.get('/api/combined-options', async (req, res) => {
+// Check session endpoint
+app.get('/api/auth/session', (req, res) => {
+  if (req.session.userId) {
+    res.json({
+      authenticated: true,
+      user: {
+        id: req.session.userId,
+        email: req.session.userEmail,
+        role: req.session.userRole
+      }
+    });
+  } else {
+    res.json({ authenticated: false });
+  }
+});
+
+// ========== SESSION MIDDLEWARE ==========
+async function requireSession(req, res, next) {
+  console.log('🔐 Checking session for route:', req.path);
+  
+  // Check session first
+  if (req.session && req.session.userId) {
+    console.log('✅ Session valid for:', req.session.userEmail);
+    req.employeeId = req.session.userId;
+    req.user = {
+      id: req.session.userId,
+      email: req.session.userEmail,
+      role: req.session.userRole
+    };
+    return next();
+  }
+
+  // Check Authorization header as fallback
+  const authHeader = req.headers.authorization;
+  if (authHeader) {
+    const token = authHeader.startsWith('Bearer ') 
+      ? authHeader.slice(7) 
+      : authHeader;
+    
+    try {
+      console.log('🔑 Checking authorization token...');
+      const { data, error } = await supabaseAdmin.auth.getUser(token);
+      if (!error && data?.user) {
+        console.log('✅ Token valid for:', data.user.email);
+        req.user = {
+          id: data.user.id,
+          email: data.user.email
+        };
+        return next();
+      }
+    } catch (err) {
+      console.error('Token validation error:', err);
+    }
+  }
+
+  console.log('❌ No valid session or token');
+  return res.status(401).json({ 
+    error: 'Unauthorized. Please log in again.' 
+  });
+}
+
+// ========== COMBINED OPTIONS ==========
+app.get('/api/combined-options', requireSession, async (req, res) => {
   try {
     // Get statuses
     const statusesResult = await query(`
@@ -235,15 +304,13 @@ app.get('/api/combined-options', async (req, res) => {
   }
 });
 
-// === STATUS ROUTES ===
-
-// Get all statuses
+// ========== STATUS ROUTES ==========
 app.get('/api/statuses', requireSession, async (req, res) => {
    try {
     const result = await query('SELECT * FROM statuses ORDER BY label');
     res.json({
       success: true,
-      data: result.rows,  // Wrap in data property
+      data: result.rows,
       count: result.rows.length
     });
   } catch (err) {
@@ -255,7 +322,6 @@ app.get('/api/statuses', requireSession, async (req, res) => {
   }
 });
 
-// Create new status
 app.post('/api/statuses', requireSession, async (req, res) => {
   try {
     const { label, color } = req.body;
@@ -273,7 +339,7 @@ app.post('/api/statuses', requireSession, async (req, res) => {
   } catch (err) {
     console.error('Error creating status:', err);
 
-    if (err.code === '23505') { // Unique violation
+    if (err.code === '23505') {
       res.status(400).json({ error: 'Status with this label already exists' });
     } else {
       res.status(500).json({ error: 'Failed to create status' });
@@ -281,7 +347,6 @@ app.post('/api/statuses', requireSession, async (req, res) => {
   }
 });
 
-// Update status
 app.put('/api/statuses/:id', requireSession, async (req, res) => {
   try {
     const { id } = req.params;
@@ -304,7 +369,7 @@ app.put('/api/statuses/:id', requireSession, async (req, res) => {
   } catch (err) {
     console.error('Error updating status:', err);
 
-    if (err.code === '23505') { // Unique violation
+    if (err.code === '23505') {
       res.status(400).json({ error: 'Status with this label already exists' });
     } else {
       res.status(500).json({ error: 'Failed to update status' });
@@ -312,12 +377,10 @@ app.put('/api/statuses/:id', requireSession, async (req, res) => {
   }
 });
 
-// Delete status
 app.delete('/api/statuses/:id', requireSession, async (req, res) => {
   try {
     const { id } = req.params;
 
-    // Check if status is being used in schedules
     const usageCheck = await query(
       'SELECT COUNT(*) FROM employee_schedule WHERE status_id = $1',
       [id]
@@ -346,49 +409,7 @@ app.delete('/api/statuses/:id', requireSession, async (req, res) => {
   }
 });
 
-// In your server.js or routes/auth.js
-app.post('/api/auth/login', async (req, res) => {
-  const { access_token } = req.body;
-  
-  if (!access_token) {
-    return res.status(400).json({ error: 'Token required' });
-  }
-  
-  try {
-    // 1. Validate token with Supabase (using service role key)
-    const { data, error } = await supabaseAdmin.auth.getUser(access_token);
-    
-    if (error || !data?.user) {
-      return res.status(401).json({ error: 'Invalid token' });
-    }
-    
-    const user = data.user;
-    
-    // 2. Create/find user in your employees table
-    const employee = await findOrCreateEmployee(user.email, user.id);
-    
-    // 3. Create secure server session
-    req.session.userId = employee.id;
-    req.session.userRole = employee.role;
-    req.session.userEmail = user.email;
-    
-    // 4. Respond with success
-    res.json({ 
-      success: true, 
-      user: { 
-        id: employee.id, 
-        role: employee.role,
-        email: user.email 
-      }
-    });
-    
-  } catch (error) {
-    console.error('Login error:', error);
-    res.status(500).json({ error: 'Internal server error' });
-  }
-});
-
-// Get all clients
+// ========== CLIENT ROUTES ==========
 app.get('/api/clients', requireSession, async (req, res) => {
   try {
     const result = await query(`
@@ -407,8 +428,6 @@ app.get('/api/clients', requireSession, async (req, res) => {
   }
 });
 
-
-// Create new client
 app.post('/api/clients', requireSession, async (req, res) => {
   try {
     const { name, location_id, color } = req.body;
@@ -419,16 +438,16 @@ app.post('/api/clients', requireSession, async (req, res) => {
 
     const result = await query(
       'INSERT INTO clients (name, location_id, color) VALUES ($1, $2, $3) RETURNING *',
-      [name.trim(), location_id, color || '#2196F3'] // Default blue color
+      [name.trim(), location_id, color || '#2196F3']
     );
 
     res.status(201).json(result.rows[0]);
   } catch (err) {
     console.error('Error creating client:', err);
 
-    if (err.code === '23505') { // Unique violation
+    if (err.code === '23505') {
       res.status(400).json({ error: 'Client with this name already exists' });
-    } else if (err.code === '23503') { // Foreign key violation
+    } else if (err.code === '23503') {
       res.status(400).json({ error: 'Invalid location selected' });
     } else {
       res.status(500).json({ error: 'Failed to create client' });
@@ -436,7 +455,6 @@ app.post('/api/clients', requireSession, async (req, res) => {
   }
 });
 
-// Update client
 app.put('/api/clients/:id', requireSession, async (req, res) => {
   try {
     const { id } = req.params;
@@ -462,9 +480,9 @@ app.put('/api/clients/:id', requireSession, async (req, res) => {
   } catch (err) {
     console.error('Error updating client:', err);
 
-    if (err.code === '23505') { // Unique violation
+    if (err.code === '23505') {
       res.status(400).json({ error: 'Client with this name already exists' });
-    } else if (err.code === '23503') { // Foreign key violation
+    } else if (err.code === '23503') {
       res.status(400).json({ error: 'Invalid location selected' });
     } else {
       res.status(500).json({ error: 'Failed to update client' });
@@ -472,12 +490,10 @@ app.put('/api/clients/:id', requireSession, async (req, res) => {
   }
 });
 
-// Delete client
 app.delete('/api/clients/:id', requireSession, async (req, res) => {
   try {
     const { id } = req.params;
 
-    // Check if client has machines
     const machinesCheck = await query(
       'SELECT COUNT(*) FROM machines WHERE client_id = $1',
       [id]
@@ -490,7 +506,6 @@ app.delete('/api/clients/:id', requireSession, async (req, res) => {
       });
     }
 
-    // Check if client is in schedules
     const scheduleCheck = await query(
       'SELECT COUNT(*) FROM employee_schedule WHERE client_id = $1',
       [id]
@@ -522,7 +537,6 @@ app.delete('/api/clients/:id', requireSession, async (req, res) => {
   }
 });
 
-// Get clients by location/region
 app.get('/api/clients/by-location/:location_id', requireSession, async (req, res) => {
   try {
     const { location_id } = req.params;
@@ -545,7 +559,7 @@ app.get('/api/clients/by-location/:location_id', requireSession, async (req, res
   }
 });
 
-// Import statuses from file 
+// ========== IMPORT ROUTES ==========
 app.post('/api/statuses/import', requireSession, upload.single('file'), async (req, res) => {
   let client;
 
@@ -559,7 +573,6 @@ app.post('/api/statuses/import', requireSession, upload.single('file'), async (r
 
     console.log(`Processing file: ${file.originalname}, Size: ${file.size} bytes, Column: ${selectedColumn}`);
 
-    // STRICT FILE TYPE CHECK
     const fileExt = file.originalname.toLowerCase().split('.').pop();
     if (!['txt', 'csv'].includes(fileExt)) {
       return res.status(400).json({
@@ -568,7 +581,6 @@ app.post('/api/statuses/import', requireSession, upload.single('file'), async (r
       });
     }
 
-    // FILE SIZE LIMIT
     if (file.size > 5 * 1024 * 1024) {
       return res.status(400).json({
         success: false,
@@ -584,9 +596,8 @@ app.post('/api/statuses/import', requireSession, upload.single('file'), async (r
     }
 
     let statusLabels = [];
-
-    // READ FILE CONTENT WITH ERROR HANDLING
     let content;
+    
     try {
       content = file.buffer.toString('utf8').trim();
     } catch (readError) {
@@ -603,11 +614,10 @@ app.post('/api/statuses/import', requireSession, upload.single('file'), async (r
       });
     }
 
-    // PARSE LINES WITH BETTER HANDLING
     const lines = content.split('\n')
       .map(line => line.trim())
-      .filter(line => line.length > 0 && !line.startsWith('#')) // Skip empty lines and comments
-      .slice(0, 1000); // Limit to 1000 lines for safety
+      .filter(line => line.length > 0 && !line.startsWith('#'))
+      .slice(0, 1000);
 
     console.log(`Found ${lines.length} lines in file`);
 
@@ -618,25 +628,21 @@ app.post('/api/statuses/import', requireSession, upload.single('file'), async (r
       });
     }
 
-    // HEADER DETECTION - COMMON HEADER WORDS
     const headerWords = new Set([
       'status', 'statuses', 'label', 'labels', 'supplier', 'suppliers',
       'type', 'types', 'category', 'categories', 'title', 'titles',
       'employee status', 'work status', 'client', 'clients', 'customer', 'customers'
     ]);
 
-    // DETECT IF FIRST LINE IS HEADER
     const firstLine = lines[0].toLowerCase();
     let isFirstLineHeader = false;
 
-    // Check if first line contains header-like words
     if (fileExt === 'csv') {
       const firstLineParts = firstLine.split(',');
       isFirstLineHeader = firstLineParts.some(part =>
         headerWords.has(part.trim())
       );
     } else {
-      // For text files, check common separators
       const separators = [',', '\t', '|'];
       for (const sep of separators) {
         if (firstLine.includes(sep)) {
@@ -648,8 +654,6 @@ app.post('/api/statuses/import', requireSession, upload.single('file'), async (r
     }
 
     console.log(`First line is header: ${isFirstLineHeader}`);
-
-    // Use data lines only (skip header if detected)
     const dataLines = isFirstLineHeader ? lines.slice(1) : lines;
 
     if (dataLines.length === 0) {
@@ -660,13 +664,10 @@ app.post('/api/statuses/import', requireSession, upload.single('file'), async (r
     }
 
     console.log(`Processing ${dataLines.length} data lines`);
-
-    // PROCESS DATA LINES
     statusLabels = dataLines.map((line, index) => {
       try {
         let value = '';
 
-        // For CSV files, always use comma separator
         if (fileExt === 'csv') {
           const parts = line.split(',');
           if (selectedColumn < parts.length) {
@@ -675,37 +676,27 @@ app.post('/api/statuses/import', requireSession, upload.single('file'), async (r
             console.log(`Warning: Line ${index + 1} doesn't have column ${selectedColumn + 1}`);
             return '';
           }
-        }
-        // For text files, detect separator
-        else if (fileExt === 'txt') {
-          // Try tab separator first (common in TSV files)
+        } else if (fileExt === 'txt') {
           if (line.includes('\t')) {
             const parts = line.split('\t');
             value = parts[selectedColumn] ? parts[selectedColumn].trim() : '';
-          }
-          // Then try comma
-          else if (line.includes(',')) {
+          } else if (line.includes(',')) {
             const parts = line.split(',');
             value = parts[selectedColumn] ? parts[selectedColumn].trim() : '';
-          }
-          // If no separators, use the whole line (single column)
-          else {
+          } else {
             value = selectedColumn === 0 ? line.trim() : '';
           }
         }
 
-        // VALIDATE EXTRACTED VALUE
         if (!value || value.length === 0) {
           return '';
         }
 
-        // Skip if it's a header word (in case we missed it earlier)
         if (headerWords.has(value.toLowerCase())) {
           console.log(`Skipping header word: ${value}`);
           return '';
         }
 
-        // Limit length for safety
         if (value.length > 100) {
           value = value.substring(0, 100);
         }
@@ -716,7 +707,7 @@ app.post('/api/statuses/import', requireSession, upload.single('file'), async (r
         console.log(`Error processing line ${index + 1}:`, error.message);
         return '';
       }
-    }).filter(label => label.length > 0); // Remove empty strings
+    }).filter(label => label.length > 0);
 
     console.log(`Successfully extracted ${statusLabels.length} valid labels`);
 
@@ -727,7 +718,6 @@ app.post('/api/statuses/import', requireSession, upload.single('file'), async (r
       });
     }
 
-    // REMOVE DUPLICATES (case insensitive)
     const uniqueLabels = [];
     const seenLabels = new Set();
 
@@ -740,14 +730,11 @@ app.post('/api/statuses/import', requireSession, upload.single('file'), async (r
     }
 
     console.log(`After deduplication: ${uniqueLabels.length} unique labels`);
-
-    // DATABASE OPERATIONS
     client = await pool.connect();
 
     try {
       await client.query('BEGIN');
 
-      // Check existing statuses (case insensitive)
       const existingResult = await client.query(
         'SELECT LOWER(label) as lower_label FROM statuses WHERE LOWER(label) = ANY($1)',
         [uniqueLabels.map(label => label.toLowerCase())]
@@ -769,7 +756,6 @@ app.post('/api/statuses/import', requireSession, upload.single('file'), async (r
         });
       }
 
-      // INSERT NEW STATUSES IN BATCHES FOR PERFORMANCE
       const batchSize = 50;
       let insertedCount = 0;
 
@@ -824,9 +810,8 @@ app.post('/api/statuses/import', requireSession, upload.single('file'), async (r
   }
 });
 
-// Import clients from file 
 app.post('/api/clients/import', requireSession, upload.single('file'), async (req, res) => {
-  let dbClient; // Renamed to avoid confusion with "clients" table
+  let dbClient;
 
   try {
     if (!req.file) {
@@ -838,7 +823,6 @@ app.post('/api/clients/import', requireSession, upload.single('file'), async (re
 
     console.log(`Processing file: ${file.originalname}, Size: ${file.size} bytes, Column: ${selectedColumn}`);
 
-    // STRICT FILE TYPE CHECK
     const fileExt = file.originalname.toLowerCase().split('.').pop();
     if (!['txt', 'csv'].includes(fileExt)) {
       return res.status(400).json({
@@ -847,7 +831,6 @@ app.post('/api/clients/import', requireSession, upload.single('file'), async (re
       });
     }
 
-    // FILE SIZE LIMIT
     if (file.size > 5 * 1024 * 1024) {
       return res.status(400).json({
         success: false,
@@ -863,9 +846,8 @@ app.post('/api/clients/import', requireSession, upload.single('file'), async (re
     }
 
     let clientNames = [];
-
-    // READ FILE CONTENT WITH ERROR HANDLING
     let content;
+    
     try {
       content = file.buffer.toString('utf8').trim();
     } catch (readError) {
@@ -882,11 +864,10 @@ app.post('/api/clients/import', requireSession, upload.single('file'), async (re
       });
     }
 
-    // PARSE LINES WITH BETTER HANDLING
     const lines = content.split('\n')
       .map(line => line.trim())
-      .filter(line => line.length > 0 && !line.startsWith('#')) // Skip empty lines and comments
-      .slice(0, 1000); // Limit to 1000 lines for safety
+      .filter(line => line.length > 0 && !line.startsWith('#'))
+      .slice(0, 1000);
 
     console.log(`Found ${lines.length} lines in file`);
 
@@ -897,7 +878,6 @@ app.post('/api/clients/import', requireSession, upload.single('file'), async (re
       });
     }
 
-    // HEADER DETECTION - CLIENT SPECIFIC HEADER WORDS
     const headerWords = new Set([
       'client', 'clients', 'customer', 'customers', 'name', 'names',
       'company', 'companies', 'organization', 'organizations',
@@ -905,18 +885,15 @@ app.post('/api/clients/import', requireSession, upload.single('file'), async (re
       'account', 'accounts', 'location', 'locations', 'address'
     ]);
 
-    // DETECT IF FIRST LINE IS HEADER
     const firstLine = lines[0].toLowerCase();
     let isFirstLineHeader = false;
 
-    // Check if first line contains header-like words
     if (fileExt === 'csv') {
       const firstLineParts = firstLine.split(',');
       isFirstLineHeader = firstLineParts.some(part =>
         headerWords.has(part.trim())
       );
     } else {
-      // For text files, check common separators
       const separators = [',', '\t', '|'];
       for (const sep of separators) {
         if (firstLine.includes(sep)) {
@@ -928,8 +905,6 @@ app.post('/api/clients/import', requireSession, upload.single('file'), async (re
     }
 
     console.log(`First line is header: ${isFirstLineHeader}`);
-
-    // Use data lines only (skip header if detected)
     const dataLines = isFirstLineHeader ? lines.slice(1) : lines;
 
     if (dataLines.length === 0) {
@@ -940,13 +915,10 @@ app.post('/api/clients/import', requireSession, upload.single('file'), async (re
     }
 
     console.log(`Processing ${dataLines.length} data lines`);
-
-    // PROCESS DATA LINES - EXTRACT CLIENT NAMES
     clientNames = dataLines.map((line, index) => {
       try {
         let value = '';
 
-        // For CSV files, always use comma separator
         if (fileExt === 'csv') {
           const parts = line.split(',');
           if (selectedColumn < parts.length) {
@@ -955,37 +927,27 @@ app.post('/api/clients/import', requireSession, upload.single('file'), async (re
             console.log(`Warning: Line ${index + 1} doesn't have column ${selectedColumn + 1}`);
             return '';
           }
-        }
-        // For text files, detect separator
-        else if (fileExt === 'txt') {
-          // Try tab separator first (common in TSV files)
+        } else if (fileExt === 'txt') {
           if (line.includes('\t')) {
             const parts = line.split('\t');
             value = parts[selectedColumn] ? parts[selectedColumn].trim() : '';
-          }
-          // Then try comma
-          else if (line.includes(',')) {
+          } else if (line.includes(',')) {
             const parts = line.split(',');
             value = parts[selectedColumn] ? parts[selectedColumn].trim() : '';
-          }
-          // If no separators, use the whole line (single column)
-          else {
+          } else {
             value = selectedColumn === 0 ? line.trim() : '';
           }
         }
 
-        // VALIDATE EXTRACTED VALUE
         if (!value || value.length === 0) {
           return '';
         }
 
-        // Skip if it's a header word (in case we missed it earlier)
         if (headerWords.has(value.toLowerCase())) {
           console.log(`Skipping header word: ${value}`);
           return '';
         }
 
-        // Limit length for safety (clients.name is VARCHAR(255))
         if (value.length > 255) {
           value = value.substring(0, 255);
           console.log(`Warning: Line ${index + 1} truncated to 255 characters`);
@@ -997,7 +959,7 @@ app.post('/api/clients/import', requireSession, upload.single('file'), async (re
         console.log(`Error processing line ${index + 1}:`, error.message);
         return '';
       }
-    }).filter(name => name.length > 0); // Remove empty strings
+    }).filter(name => name.length > 0);
 
     console.log(`Successfully extracted ${clientNames.length} valid client names`);
 
@@ -1008,7 +970,6 @@ app.post('/api/clients/import', requireSession, upload.single('file'), async (re
       });
     }
 
-    // REMOVE DUPLICATES (case insensitive)
     const uniqueNames = [];
     const seenNames = new Set();
 
@@ -1021,14 +982,11 @@ app.post('/api/clients/import', requireSession, upload.single('file'), async (re
     }
 
     console.log(`After deduplication: ${uniqueNames.length} unique client names`);
-
-    // DATABASE OPERATIONS
-    dbClient = await pool.connect(); // Using dbClient to avoid confusion
+    dbClient = await pool.connect();
 
     try {
       await dbClient.query('BEGIN');
 
-      // Check existing clients (case insensitive)
       const existingResult = await dbClient.query(
         'SELECT LOWER(name) as lower_name FROM clients WHERE LOWER(name) = ANY($1)',
         [uniqueNames.map(name => name.toLowerCase())]
@@ -1050,14 +1008,11 @@ app.post('/api/clients/import', requireSession, upload.single('file'), async (re
         });
       }
 
-      // INSERT NEW CLIENTS IN BATCHES FOR PERFORMANCE
       const batchSize = 50;
       let insertedCount = 0;
 
       for (let i = 0; i < newClients.length; i += batchSize) {
         const batch = newClients.slice(i, i + batchSize);
-        
-        // Create VALUES clause for batch insert
         const placeholders = batch.map((_, idx) => `($${idx + 1})`).join(',');
         
         await dbClient.query(
@@ -1110,8 +1065,7 @@ app.post('/api/clients/import', requireSession, upload.single('file'), async (re
   }
 });
 
-// === EMPLOYEE ROUTES ===
-// Get all employees
+// ========== EMPLOYEE ROUTES ==========
 app.get('/api/employees', requireSession, async (req, res) => {
   try {
     const result = await query('SELECT * FROM employees ORDER BY name');
@@ -1122,7 +1076,6 @@ app.get('/api/employees', requireSession, async (req, res) => {
   }
 });
 
-// Create new employee
 app.post('/api/employees', requireSession, async (req, res) => {
   try {
     const { name, ext } = req.body;
@@ -1147,7 +1100,6 @@ app.post('/api/employees', requireSession, async (req, res) => {
   }
 });
 
-// Update employee
 app.put('/api/employees/:id', requireSession, async (req, res) => {
   try {
     const { id } = req.params;
@@ -1177,12 +1129,10 @@ app.put('/api/employees/:id', requireSession, async (req, res) => {
   }
 });
 
-// Delete employee
 app.delete('/api/employees/:id', requireSession, async (req, res) => {
   try {
     const { id } = req.params;
 
-    // Check if employee is being used in schedules
     const usageCheck = await query(
       'SELECT COUNT(*) FROM employee_schedule WHERE employee_id = $1',
       [id]
@@ -1211,6 +1161,7 @@ app.delete('/api/employees/:id', requireSession, async (req, res) => {
   }
 });
 
+// ========== SCHEDULE ROUTES ==========
 app.get("/api/schedule", requireSession, async (req, res) => {
   try {
     console.log("🔍 Fetching schedules from database...");
@@ -1227,7 +1178,7 @@ app.get("/api/schedule", requireSession, async (req, res) => {
       FROM employee_schedule es
       LEFT JOIN employees we ON es.with_employee_id = we.id
       WHERE employee_id IS NOT NULL AND (status_id IS NOT NULL OR client_id IS NOT NULL)
-      ORDER BY es.date, es.employee_id, es.id ASC  -- ORDER BY date first, then insertion order
+      ORDER BY es.date, es.employee_id, es.id ASC
     `);
 
     console.log(`📊 Database returned ${result.rows.length} rows`);
@@ -1247,15 +1198,11 @@ app.get("/api/schedule", requireSession, async (req, res) => {
       if (!schedules[empId]) schedules[empId] = {};
       if (!schedules[empId][dateStr]) schedules[empId][dateStr] = [];
 
-      // If it has a with_employee_id, store it differently
       if (row.with_employee_id && row.with_employee_name) {
-        // If it's a 'with' entry, prefer status_id if present
         schedules[empId][dateStr].push(`with_${row.with_employee_id}_status-${row.status_id || ''}`);
       } else if (row.status_id) {
-        // Normal status - prefix to match frontend `status-<id>` format
         schedules[empId][dateStr].push(`status-${row.status_id}`);
       } else if (row.client_id) {
-        // Client entry - prefix to match frontend `client-<id>` format
         schedules[empId][dateStr].push(`client-${row.client_id}`);
       }
     }
@@ -1272,6 +1219,7 @@ app.post("/api/schedule", requireSession, async (req, res) => {
   console.log("📥 POST /api/schedule - Body:", req.body);
   const { employeeId, date, items } = req.body;
   const parsedEmployeeId = parseInt(employeeId, 10);
+  
   if (isNaN(parsedEmployeeId)) {
     console.warn('⚠️ Invalid employeeId in request:', employeeId);
     return res.status(400).json({ error: 'Invalid employeeId' });
@@ -1282,20 +1230,17 @@ app.post("/api/schedule", requireSession, async (req, res) => {
   try {
     await dbClient.query("BEGIN");
 
-    // Delete old entries for this employee/date
     await dbClient.query(
       "DELETE FROM employee_schedule WHERE employee_id = $1 AND date = $2",
       [parsedEmployeeId, date]
     );
 
-    // If no items, just commit (clears previous entries)
     if (!Array.isArray(items) || items.length === 0) {
       await dbClient.query("COMMIT");
       console.log('ℹ️ No items to insert; cleared existing schedule for', parsedEmployeeId, date);
       return res.json({ success: true });
     }
 
-    // Insert new
     for (const item of items) {
       console.log(`📝 Inserting: type=${item.type}, id=${item.id}, withEmployeeId=${item.withEmployeeId}`);
 
@@ -1306,18 +1251,16 @@ app.post("/api/schedule", requireSession, async (req, res) => {
       }
 
       if (item.type === 'client') {
-        const insertRes = await dbClient.query(
+        await dbClient.query(
           "INSERT INTO employee_schedule (employee_id, client_id, date) VALUES ($1, $2, $3) RETURNING *",
           [parsedEmployeeId, parsedId, date]
         );
-        console.log('🟢 Inserted client row:', insertRes.rows[0]);
       } else if (item.type === 'status') {
         const withEmployee = item.withEmployeeId ? parseInt(item.withEmployeeId, 10) : null;
-        const insertRes = await dbClient.query(
+        await dbClient.query(
           "INSERT INTO employee_schedule (employee_id, status_id, date, with_employee_id) VALUES ($1, $2, $3, $4) RETURNING *",
           [parsedEmployeeId, parsedId, date, isNaN(withEmployee) ? null : withEmployee]
         );
-        console.log('🟢 Inserted status row:', insertRes.rows[0]);
       } else {
         console.warn('⚠️ Unknown item type, skipping:', item.type);
       }
@@ -1335,77 +1278,6 @@ app.post("/api/schedule", requireSession, async (req, res) => {
     dbClient.release();
   }
 });
-/*
-app.post("/api/schedule", async (req, res) => {
-  const { employeeId, date, statusIds, withEmployeeId } = req.body;
-  console.log("💾 Schedule update:", { employeeId, date, statusIds, withEmployeeId });
-
-  const client = await pool.connect();
-
-  try {
-    await client.query("BEGIN");
-
-    // 1️⃣ Find the "With ..." status ID
-    const withStatusResult = await client.query(
-      "SELECT id FROM statuses WHERE label = 'With ...'"
-    );
-    const withStatusId = withStatusResult.rows[0]?.id;
-    console.log("🎯 With Status ID:", withStatusId);
-
-    // 2️⃣ Delete all entries for this employee/date
-    await client.query(
-      "DELETE FROM employee_schedule WHERE employee_id = $1 AND date = $2",
-      [employeeId, date]
-    );
-
-    // Delete existing relationships for this employee/date
-    await client.query(
-      "DELETE FROM employee_relationships WHERE employee_id = $1 AND date = $2",
-      [employeeId, date]
-    );
-
-    // 3️⃣ Insert all statuses
-    for (const statusId of statusIds) {
-      let withEmployeeValue = null;
-
-      // Check if this is the "With ..." status
-      if (withStatusId && statusId === withStatusId && withEmployeeId) {
-        withEmployeeValue = withEmployeeId;
-        console.log("👤 Saving with employee:", withEmployeeValue);
-
-        // Save relationship in employee_relationships table
-        await client.query(
-          `INSERT INTO employee_relationships 
-           (employee_id, linked_employee_id, relationship_type, date)
-           VALUES ($1, $2, 'with', $3)
-           ON CONFLICT (employee_id, linked_employee_id, date, relationship_type) 
-           DO NOTHING`,
-          [employeeId, withEmployeeId, date]
-        );
-      }
-
-      await client.query(
-        "INSERT INTO employee_schedule (employee_id, status_id, date, with_employee_id) VALUES ($1, $2, $3, $4)",
-        [employeeId, statusId, date, withEmployeeValue]
-      );
-    }
-
-    await client.query("COMMIT");
-
-    res.json({
-      message: "Schedule updated successfully",
-      withEmployeeId: withEmployeeId
-    });
-
-  } catch (err) {
-    await client.query("ROLLBACK");
-    console.error("❌ Update failed:", err);
-    res.status(500).json({ error: "Failed to update schedule" });
-  } finally {
-    client.release();
-  }
-});*/
-
 
 app.get("/api/relationships", requireSession, async (req, res) => {
   try {
@@ -1427,7 +1299,6 @@ app.get("/api/relationships", requireSession, async (req, res) => {
       FROM employee_schedule es
       JOIN employees e ON es.employee_id = e.id
       JOIN statuses s ON es.status_id = s.id
-      -- join linked employees
       LEFT JOIN employee_relationships er
         ON er.employee_id = e.id
         AND er.date = es.date
@@ -1445,10 +1316,35 @@ app.get("/api/relationships", requireSession, async (req, res) => {
   }
 });
 
-
+// ========== EMAIL ROUTES ==========
 app.use('/api', emailRoutes);
 
-// Start server
+// ========== 404 HANDLER ==========
+app.use('*', (req, res) => {
+  console.log(`❌ Route not found: ${req.originalUrl}`);
+  res.status(404).json({ 
+    error: 'Route not found',
+    path: req.originalUrl 
+  });
+});
+
+// ========== ERROR HANDLER ==========
+app.use((err, req, res, next) => {
+  console.error('🔥 Server error:', err);
+  
+  if (err instanceof multer.MulterError) {
+    return res.status(400).json({ 
+      error: `File upload error: ${err.message}` 
+    });
+  }
+  
+  res.status(500).json({ 
+    error: 'Internal server error',
+    message: process.env.NODE_ENV === 'development' ? err.message : undefined
+  });
+});
+
+// ========== START SERVER ==========
 async function startServer() {
   try {
     await openDB();
@@ -1457,10 +1353,16 @@ async function startServer() {
     console.log('✅ Database connected and initialized');
 
     app.listen(PORT, '0.0.0.0', () => {
-      console.log(`🚀 Server running in ${process.env.NODE_ENV} mode on http://localhost:${PORT}`);
+      console.log('\n' + '='.repeat(50));
+      console.log(`🚀 Server running in ${process.env.NODE_ENV} mode`);
+      console.log(`📡 Port: ${PORT}`);
+      console.log(`🔗 URL: http://localhost:${PORT}`);
       console.log(`🏥 Health check: http://localhost:${PORT}/api/health`);
-      console.log(`🌐 CORS enabled for: ${process.env.CORS_ORIGIN || 'http://localhost:5173'}`);
-      console.log(`🗄️ Database: PostgreSQL`);
+      console.log(`🌐 CORS enabled for:`);
+      console.log(`   - http://localhost:5173`);
+      console.log(`   - https://lovely-faloodeh-8a93b0.netlify.app`);
+      console.log(`🔐 Allowed emails: ${ALLOWED_EMAILS.join(', ')}`);
+      console.log('='.repeat(50) + '\n');
     });
   } catch (error) {
     console.error('❌ Failed to start server:', error);
