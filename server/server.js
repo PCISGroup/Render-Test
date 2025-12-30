@@ -41,16 +41,6 @@ const upload = multer({
   }
 });
 
-// Middleware
-app.use(cors({
-  origin: [
-    'http://localhost:5173',
-    'https://render-test-frontend-da9h.onrender.com'
-  ],
-  credentials: true
-}));
-app.use(express.json());
-
 // Cookie & session middleware (for MSAL server-side auth)
 app.use(cookieParser());
 app.use(session({
