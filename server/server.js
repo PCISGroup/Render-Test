@@ -1401,6 +1401,28 @@ app.get("/api/relationships", requireSession, async (req, res) => {
 
 app.use('/api', emailRoutes);
 
+import { fileURLToPath } from 'url';
+import { dirname, join } from 'path';
+import { existsSync } from 'fs';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+
+const distPath = join(__dirname, 'dist');
+if (existsSync(distPath)) {
+  app.use(express.static(distPath));
+  console.log('✅ Serving frontend from:', distPath);
+  
+  // For React/Vite SPA - handle client-side routing
+  app.get('*', (req, res) => {
+    if (!req.path.startsWith('/api')) {
+      res.sendFile(join(distPath, 'index.html'));
+    }
+  });
+} else {
+  console.log('⚠️ No dist folder - API only mode');
+}
+
 // Start server
 async function startServer() {
   try {
