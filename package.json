@@ -5,15 +5,15 @@
   "type": "module",
   "main": "main.js",
   "scripts": {
-    "dev": "vite",
+    "start": "npm run build && node server/server.js",
     "build": "vite build",
-    "lint": "eslint .",
-    "preview": "vite preview",
     "server": "node server/server.js",
     "server:dev": "nodemon server/server.js",
+    "dev": "vite",
+    "lint": "eslint .",
+    "preview": "vite preview",
     "electron:dev": "concurrently \"npm run server:dev\" \"wait-on http://localhost:5173 && electron .\"",
-    "electron:build": "npm run build && electron-builder",
-    "start": "node server/server.js"
+    "electron:build": "npm run build && electron-builder"
   },
   "dependencies": {
     "@azure/msal-node": "^3.8.4",
