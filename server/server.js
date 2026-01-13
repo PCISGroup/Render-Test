@@ -27,7 +27,7 @@ const PORT = process.env.PORT || 5001;
 app.use(cors({
   origin: [
     'http://localhost:5173',
-    'https://lovely-faloodeh-8a93b0.netlify.app'
+    'https://pcis-scheduler.onrender.com'
   ],
   credentials: true ,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
