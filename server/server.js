@@ -132,6 +132,10 @@ async function requireSession(req, res, next) {
 
   console.log('✅ Token verified for:', data.user.email);
 
+  const userEmail = data.user.email.toLowerCase();
+  const allowed = ['info@pcis.group', 'se.admin@pcis.group'];
+  if (!allowed.includes(userEmail)) return res.status(403).json({ error: 'Access denied' });
+
   req.user = {
     id: data.user.id,
     email: data.user.email
