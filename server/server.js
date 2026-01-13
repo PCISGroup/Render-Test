@@ -6,6 +6,10 @@ import multer from 'multer';
 import cookieParser from 'cookie-parser';
 import session from 'express-session';
 
+import { fileURLToPath } from 'url';
+import { dirname, join } from 'path';
+import { existsSync } from 'fs';
+
 import emailRoutes from './routes/emailRoutes.js';
 import supabaseAdmin from './supabaseAdmin.js';
 
@@ -1400,10 +1404,6 @@ app.get("/api/relationships", requireSession, async (req, res) => {
 
 
 app.use('/api', emailRoutes);
-
-import { fileURLToPath } from 'url';
-import { dirname, join } from 'path';
-import { existsSync } from 'fs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
