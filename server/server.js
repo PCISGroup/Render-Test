@@ -31,7 +31,7 @@ const PORT = process.env.PORT || 5001;
 app.use(cors({
   origin: [
     'http://localhost:5173',
-    'https://pcis-scheduler.onrender.com'
+    'https://pcisgroup.com/'
   ],
   credentials: true ,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
@@ -1292,77 +1292,6 @@ app.post("/api/schedule", requireSession, async (req, res) => {
     dbClient.release();
   }
 });
-/*
-app.post("/api/schedule", async (req, res) => {
-  const { employeeId, date, statusIds, withEmployeeId } = req.body;
-  console.log("💾 Schedule update:", { employeeId, date, statusIds, withEmployeeId });
-
-  const client = await pool.connect();
-
-  try {
-    await client.query("BEGIN");
-
-    // 1️⃣ Find the "With ..." status ID
-    const withStatusResult = await client.query(
-      "SELECT id FROM statuses WHERE label = 'With ...'"
-    );
-    const withStatusId = withStatusResult.rows[0]?.id;
-    console.log("🎯 With Status ID:", withStatusId);
-
-    // 2️⃣ Delete all entries for this employee/date
-    await client.query(
-      "DELETE FROM employee_schedule WHERE employee_id = $1 AND date = $2",
-      [employeeId, date]
-    );
-
-    // Delete existing relationships for this employee/date
-    await client.query(
-      "DELETE FROM employee_relationships WHERE employee_id = $1 AND date = $2",
-      [employeeId, date]
-    );
-
-    // 3️⃣ Insert all statuses
-    for (const statusId of statusIds) {
-      let withEmployeeValue = null;
-
-      // Check if this is the "With ..." status
-      if (withStatusId && statusId === withStatusId && withEmployeeId) {
-        withEmployeeValue = withEmployeeId;
-        console.log("👤 Saving with employee:", withEmployeeValue);
-
-        // Save relationship in employee_relationships table
-        await client.query(
-          `INSERT INTO employee_relationships 
-           (employee_id, linked_employee_id, relationship_type, date)
-           VALUES ($1, $2, 'with', $3)
-           ON CONFLICT (employee_id, linked_employee_id, date, relationship_type) 
-           DO NOTHING`,
-          [employeeId, withEmployeeId, date]
-        );
-      }
-
-      await client.query(
-        "INSERT INTO employee_schedule (employee_id, status_id, date, with_employee_id) VALUES ($1, $2, $3, $4)",
-        [employeeId, statusId, date, withEmployeeValue]
-      );
-    }
-
-    await client.query("COMMIT");
-
-    res.json({
-      message: "Schedule updated successfully",
-      withEmployeeId: withEmployeeId
-    });
-
-  } catch (err) {
-    await client.query("ROLLBACK");
-    console.error("❌ Update failed:", err);
-    res.status(500).json({ error: "Failed to update schedule" });
-  } finally {
-    client.release();
-  }
-});*/
-
 
 app.get("/api/relationships", requireSession, async (req, res) => {
   try {
@@ -1412,8 +1341,6 @@ const distPath = join(__dirname, 'dist');
 if (existsSync(distPath)) {
   app.use(express.static(distPath));
   console.log('✅ Serving frontend from:', distPath);
-  
-  // For React/Vite SPA - handle client-side routing
   app.get('*', (req, res) => {
     if (!req.path.startsWith('/api')) {
       res.sendFile(join(distPath, 'index.html'));
