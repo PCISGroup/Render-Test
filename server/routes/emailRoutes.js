@@ -176,7 +176,7 @@ router.post('/test-email', async (req, res) => {
         // Create a temporary settings object for test email
         const testSettings = {
             recipients: [testEmail],
-            includeWeekends: false,
+            include_weekends: false,
         };
 
         // Fetch today's actual schedule data from DB
