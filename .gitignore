@@ -25,3 +25,5 @@ dist-ssr
 
 #.env file
 .env 
+
+echo "dist/" >> .gitignore

@@ -1,6 +1,6 @@
 import React, { useState, useCallback } from "react";
 import { Link, useLocation, Outlet, useNavigate } from "react-router-dom";
-import { Users, Calendar, BarChart3, Menu, Activity, LogOut } from "lucide-react";
+import { Users, Calendar, BarChart3, Menu, Activity, LogOut, ClipboardList } from "lucide-react";
 import { supabase } from '../../lib/supabaseClient';
 import "./Layout.css";
 import icon from '/electra-favicon.png';
@@ -10,6 +10,7 @@ const navigationItems = [
   { title: "Employees", url: "/employees", icon: Users },
   { title: "Analytics", url: "/analytics", icon: BarChart3 },
   { title: "Status", url: "/status", icon: Activity },
+  { title: "Logs", url: "/logs", icon: ClipboardList },
 ];
 
 export default function Layout() {

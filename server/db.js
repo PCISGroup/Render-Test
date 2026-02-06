@@ -155,6 +155,61 @@ export async function initDB() {
     `);
 
     // ========================
+    // 6a. SCHEDULE_TYPES TABLE 
+    // ========================
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS schedule_types (
+        id SERIAL PRIMARY KEY,
+        type_name VARCHAR(100) NOT NULL UNIQUE,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+
+    // ========================
+    // 6b. SCHEDULE_STATES TABLE 
+    // ========================
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS schedule_states (
+        id SERIAL PRIMARY KEY,
+        state_name VARCHAR(100) NOT NULL UNIQUE,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+
+    // ========================
+// 6c. CANCELLATION_REASONS TABLE 
+// ========================
+await client.query(`
+  CREATE TABLE IF NOT EXISTS cancellation_reasons (
+    id SERIAL PRIMARY KEY,
+    reason TEXT NOT NULL,
+    note TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+  );
+`);
+
+// Add cancellation_reason_id to employee_schedule table
+await client.query(`
+  DO $$
+  BEGIN
+    IF NOT EXISTS (
+      SELECT 1 FROM information_schema.columns 
+      WHERE table_name = 'employee_schedule' 
+      AND column_name = 'cancellation_reason_id'
+    ) THEN
+      ALTER TABLE employee_schedule 
+      ADD COLUMN cancellation_reason_id INTEGER REFERENCES cancellation_reasons(id) ON DELETE SET NULL;
+    END IF;
+  END $$;
+`);
+
+// Create index for cancellation reasons
+await client.query(`
+  CREATE INDEX IF NOT EXISTS idx_schedule_cancellation 
+  ON employee_schedule(cancellation_reason_id);
+`);
+
+    // ========================
     // X. EMPLOYEE_CLIENTS (join table for employee responsibilities)
     // ========================
     await client.query(`
@@ -194,6 +249,51 @@ export async function initDB() {
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
   );
 `);
+ 
+    // Add schedule_type_id column if it doesn't exist
+    await client.query(`
+      DO $$
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM information_schema.columns 
+          WHERE table_name = 'employee_schedule' 
+          AND column_name = 'schedule_type_id'
+        ) THEN
+          ALTER TABLE employee_schedule 
+          ADD COLUMN schedule_type_id INTEGER REFERENCES schedule_types(id) ON DELETE SET NULL;
+        END IF;
+      END $$;
+    `);
+
+    // Add schedule_state_id column if it doesn't exist
+    await client.query(`
+      DO $$
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM information_schema.columns 
+          WHERE table_name = 'employee_schedule' 
+          AND column_name = 'schedule_state_id'
+        ) THEN
+          ALTER TABLE employee_schedule 
+          ADD COLUMN schedule_state_id INTEGER REFERENCES schedule_states(id) ON DELETE SET NULL;
+        END IF;
+      END $$;
+    `);
+
+    // Add postponed_date column if it doesn't exist
+    await client.query(`
+      DO $$
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM information_schema.columns 
+          WHERE table_name = 'employee_schedule' 
+          AND column_name = 'postponed_date'
+        ) THEN
+          ALTER TABLE employee_schedule 
+          ADD COLUMN postponed_date DATE;
+        END IF;
+      END $$;
+    `);
 
     // ========================
     // 8. EMPLOYEE_RELATIONSHIPS TABLE
@@ -223,6 +323,40 @@ export async function initDB() {
   );
 `);
 
+/* ========================
+-- AUDIT LOGS TABLE
+ ======================== */
+await client.query(`
+CREATE TABLE IF NOT EXISTS audit_logs (
+  id SERIAL PRIMARY KEY,
+
+  -- Who did it
+  user_id UUID NOT NULL,                     -- stable identity from Supabase
+  user_email VARCHAR(255) NOT NULL,          -- snapshot for readability
+
+  -- What and where
+  action VARCHAR(20) NOT NULL,               -- 'CREATE' | 'UPDATE' | 'DELETE' | 'IMPORT'
+  table_name VARCHAR(100) NOT NULL,          -- e.g., 'employees', 'clients'
+  record_id TEXT,                            -- store PK as text; supports int or composite IDs
+
+  -- What changed
+  before JSONB,                              -- previous state (null for CREATE)
+  after JSONB,                               -- new state (null for DELETE)
+
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+  -- keep action values constrained
+  CONSTRAINT audit_logs_action_chk
+    CHECK (action IN ('CREATE', 'UPDATE', 'DELETE', 'IMPORT'))
+);
+`);
+
+await client.query(`CREATE INDEX IF NOT EXISTS idx_audit_created_at ON audit_logs (created_at DESC);`);
+await client.query(`CREATE INDEX IF NOT EXISTS idx_audit_user_id ON audit_logs (user_id);`);
+await client.query(`CREATE INDEX IF NOT EXISTS idx_audit_user_email ON audit_logs (user_email);`);
+await client.query(`CREATE INDEX IF NOT EXISTS idx_audit_table_name ON audit_logs (table_name);`);
+await client.query(`CREATE INDEX IF NOT EXISTS idx_audit_action ON audit_logs (action);`);
+await client.query(`CREATE INDEX IF NOT EXISTS idx_audit_table_record ON audit_logs (table_name, record_id);`);
     // ========================
     // CREATE INDEXES FOR ALL TABLES
     // ========================
@@ -298,7 +432,7 @@ export async function initDB() {
       ON statuses(label);
     `);
 
-    // Employee schedule indexes - MOST IMPORTANT!
+    // Employee schedule indexes 
     await client.query(`
       CREATE INDEX IF NOT EXISTS idx_schedule_employee_date 
       ON employee_schedule(employee_id, date);
@@ -334,6 +468,30 @@ export async function initDB() {
       CREATE INDEX IF NOT EXISTS idx_rel_date 
       ON employee_relationships(date);
     `);
+        // Schedule Types index
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_schedule_types 
+      ON schedule_types(type_name);
+    `);
+
+    // Schedule States index
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_schedule_states 
+      ON schedule_states(state_name);
+    `);
+
+    // Employee schedule indexes 
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_schedule_type 
+      ON employee_schedule(schedule_type_id);
+    `);
+
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_schedule_state 
+      ON employee_schedule(schedule_state_id);
+    `);
+
+
 
     await client.query("COMMIT");
     console.log("🗄️ PostgreSQL database initialized successfully with 9+ tables!");

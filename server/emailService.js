@@ -60,10 +60,10 @@ class EmailService {
   }
 
   async getTodaysScheduleFromDB(date) {
-    const dateStr = format(date, 'yyyy-MM-dd');
+  const dateStr = format(date, 'yyyy-MM-dd');
 
-    try {
-      const result = await query(`
+  try {
+    const result = await query(`
       WITH schedule_data AS (
         SELECT 
           e.id as employee_id,
@@ -71,7 +71,10 @@ class EmailService {
           e.ext,
           ARRAY_AGG(
             CASE 
-              WHEN es.client_id IS NOT NULL THEN
+              WHEN es.client_id IS NOT NULL AND es.schedule_type_id IS NOT NULL THEN
+                COALESCE(c.name, 'Client ' || es.client_id::TEXT) || 
+                ' (' || COALESCE(st.type_name, '') || ')'
+              WHEN es.client_id IS NOT NULL AND es.schedule_type_id IS NULL THEN
                 COALESCE(c.name, 'Client ' || es.client_id::TEXT)
               WHEN (s.label ILIKE '%with%') AND es.with_employee_id IS NOT NULL THEN
                 'With ' || COALESCE(we.name, 'Unknown')
@@ -86,7 +89,8 @@ class EmailService {
         JOIN employees e ON es.employee_id = e.id
         LEFT JOIN statuses s ON es.status_id = s.id
         LEFT JOIN clients c ON es.client_id = c.id
-        LEFT JOIN employees we ON es.with_employee_id = we.id  -- JOIN for "with" employee
+        LEFT JOIN employees we ON es.with_employee_id = we.id
+        LEFT JOIN schedule_types st ON es.schedule_type_id = st.id
         WHERE es.date = $1
         GROUP BY e.id, e.name, e.ext
       )
@@ -98,32 +102,26 @@ class EmailService {
       ORDER BY name
     `, [dateStr]);
 
-      const scheduleData = result.rows.map(row => ({
-        name: row.name,
-        ext: row.ext || '',
-        statuses: row.statuses || []
-      }));
+    const scheduleData = result.rows.map(row => ({
+      name: row.name,
+      ext: row.ext || '',
+      statuses: row.statuses || []
+    }));
 
-      console.log(`📊 Found ${scheduleData.length} employees with schedules for ${dateStr}`);
+    console.log(`📊 Found ${scheduleData.length} employees with schedules for ${dateStr}`);
 
-      // DEBUG: Log first few entries to see what's being returned
-      if (scheduleData.length > 0) {
-        console.log('🔍 DEBUG - First employee statuses:', JSON.stringify(scheduleData[0], null, 2));
-
-        // Check if we have any "With ..." statuses
-        const withStatuses = scheduleData.filter(emp =>
-          emp.statuses.some(status => status.includes('With'))
-        );
-        console.log(`🔍 DEBUG - Employees with "With" statuses: ${withStatuses.length}`);
-      }
-
-      return scheduleData;
-
-    } catch (error) {
-      console.error('Error fetching schedule data:', error);
-      return [];
+    // DEBUG: Log first few entries
+    if (scheduleData.length > 0) {
+      console.log('🔍 DEBUG - First employee statuses:', JSON.stringify(scheduleData[0], null, 2));
     }
+
+    return scheduleData;
+
+  } catch (error) {
+    console.error('Error fetching schedule data:', error);
+    return [];
   }
+}
 
   generateEmailHTML(scheduleData, date) {
     return `

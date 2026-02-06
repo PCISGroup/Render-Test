@@ -14,7 +14,11 @@ const ScheduleTableRow = ({
   // getStatuses,
   setActiveDropdown,
   toggleStatus,
-  employeesList = []
+  employeesList = [],
+  scheduleTypes = [],
+   statusStates,
+  onStatusStateChange,
+  availableStates = []
 }) => {
   return (
     <tr key={employee.id}>
@@ -47,6 +51,10 @@ const ScheduleTableRow = ({
             setActiveDropdown={setActiveDropdown}
             toggleStatus={toggleStatus}
             employeesList={employeesList}
+            scheduleTypes={scheduleTypes}
+              statusStates={statusStates}
+            onStatusStateChange={onStatusStateChange}
+            availableStates={availableStates}
           />
         );
       })}

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { X, Mail, Users, Calendar, Send, CheckCircle, AlertCircle, Plus, Trash2, Wifi, WifiOff } from 'lucide-react';
 import './emailModal.css';
 
@@ -19,7 +19,6 @@ const validateEmail = (email) => {
 const formatErrorMessage = (error) => {
   let message = error?.message || error?.toString() || "";
 
-  // Remove ALL localhost / technical addresses
   message = message
     .replace(/https?:\/\/localhost(:\d+)?/gi, "")
     .replace(/https?:\/\/127\.0\.0\.1(:\d+)?/gi, "")
@@ -28,23 +27,19 @@ const formatErrorMessage = (error) => {
     .replace(/http:\/\/[^\s]+/gi, "")
     .replace(/https:\/\/[^\s]+/gi, "");
 
-  // Network problems
   message = message
     .replace(/Failed to fetch/gi, "Unable to reach the server")
     .replace(/Network request failed/gi, "Network connection issue")
     .replace(/(timeout|timed out|ETIMEDOUT)/gi, "Request took too long");
 
-  // Server unreachable
   message = message
     .replace(/ECONNREFUSED/gi, "Server is not responding")
     .replace(/ENOTFOUND/gi, "Could not connect to server");
 
-  // Response issues
   message = message
     .replace(/Unexpected token/gi, "Invalid server response")
     .replace(/Unexpected end of JSON input/gi, "Incomplete server response");
 
-  // Strip technical details
   const technicalPatterns = [
     /HTTP \d+:/gi,
     /status code \d+/gi,
@@ -57,7 +52,6 @@ const formatErrorMessage = (error) => {
     message = message.replace(pattern, "");
   });
 
-  // Clean up
   message = message
     .replace(/\s+/g, ' ')
     .trim();
@@ -76,7 +70,6 @@ const formatErrorMessage = (error) => {
 const formatSuccessMessage = (message = "") => {
   if (!message) return "Operation completed successfully.";
 
-  // Remove ALL URLs and localhost references
   message = message
     .replace(/https?:\/\/localhost(:\d+)?/gi, "")
     .replace(/https?:\/\/127\.0\.0\.1(:\d+)?/gi, "")
@@ -85,7 +78,6 @@ const formatSuccessMessage = (message = "") => {
     .replace(/http:\/\/[^\s]+/gi, "")
     .replace(/https:\/\/[^\s]+/gi, "");
 
-  // Convert technical success messages to friendly ones
   const successMappings = [
     { pattern: /(insert(ed)?|save(d)?) successfully/gi, replace: "Saved successfully" },
     { pattern: /update(d)? successfully/gi, replace: "Updated successfully" },
@@ -100,12 +92,10 @@ const formatSuccessMessage = (message = "") => {
     message = message.replace(pattern, replace);
   });
 
-  // Clean up
   message = message
     .replace(/\s+/g, ' ')
     .trim();
 
-  // Capitalize first letter and ensure it ends with period
   if (message.length > 0) {
     message = message.charAt(0).toUpperCase() + message.slice(1);
     if (!/[.!?]$/.test(message)) {
@@ -145,14 +135,12 @@ const showToast = (type, title, message) => {
   
   document.body.appendChild(toast);
   
-  // Remove toast after timeout
   setTimeout(() => {
     if (toast.parentNode) {
       toast.parentNode.removeChild(toast);
     }
   }, type === 'success' ? 3000 : 5001);
   
-  // Add click handler to close
   toast.querySelector('.email-toast-close').onclick = () => {
     if (toast.parentNode) {
       toast.parentNode.removeChild(toast);
@@ -164,7 +152,6 @@ export default function EmailSettingsModal({ settings, onSave, onClose }) {
   const [isOnline, setIsOnline] = useState(true);
   const [usingCachedSettings, setUsingCachedSettings] = useState(false);
   const [formData, setFormData] = useState({
-    enabled: true,
     recipients: [],
     includeWeekends: false,
   });
@@ -178,6 +165,8 @@ export default function EmailSettingsModal({ settings, onSave, onClose }) {
     testEmail: null
   });
   const [isSaving, setIsSaving] = useState(false);
+  const [isLoading, setIsLoading] = useState(false);
+  const initialized = useRef(false);
 
   // Check if backend is online
   useEffect(() => {
@@ -202,56 +191,94 @@ export default function EmailSettingsModal({ settings, onSave, onClose }) {
     return () => clearInterval(interval);
   }, []);
 
-  // Load settings from localStorage as backup when backend is offline or settings empty
+  // Load settings - ONLY from database/props, NOT from localStorage first
   useEffect(() => {
-    // Load cached settings from localStorage
-    const cachedSettings = localStorage.getItem('emailSettings');
+    if (initialized.current) return;
+    initialized.current = true;
+
+    console.log('🔄 Loading email settings...');
     
     let loadedSettings = {
       recipients: [],
       includeWeekends: false,
     };
 
-    // First try to use props from parent (from backend)
-    if (settings && settings.recipients && Array.isArray(settings.recipients) && settings.recipients.length > 0) {
+    // ALWAYS use settings from props (which should come from database)
+    if (settings) {
+      console.log('📦 Settings from props:', settings);
+      
+      // Parse recipients from settings
+      let recipients = [];
+      if (settings.recipients) {
+        if (Array.isArray(settings.recipients)) {
+          recipients = settings.recipients;
+        } else if (typeof settings.recipients === 'string') {
+          // Try to parse PostgreSQL array string
+          try {
+            if (settings.recipients.startsWith('{') && settings.recipients.endsWith('}')) {
+              recipients = settings.recipients
+                .slice(1, -1)
+                .split(',')
+                .map(email => email.trim().replace(/"/g, ''))
+                .filter(email => email);
+            } else if (settings.recipients.startsWith('[') && settings.recipients.endsWith(']')) {
+              recipients = JSON.parse(settings.recipients);
+            }
+          } catch (e) {
+            console.error('Failed to parse recipients:', e);
+          }
+        }
+      }
+      
       loadedSettings = {
-        ...loadedSettings,
-        ...settings,
-        recipients: settings.recipients
+        recipients: recipients.filter(Boolean).map(email => email.trim().toLowerCase()),
+        includeWeekends: settings.includeWeekends || settings.include_weekends || false
       };
+      
+      console.log('✅ Loaded from database/props:', loadedSettings.recipients);
       setUsingCachedSettings(false);
     }
-    // If backend settings are empty, try localStorage
-    else if (cachedSettings) {
-      try {
-        const parsed = JSON.parse(cachedSettings);
-        if (parsed.recipients && Array.isArray(parsed.recipients)) {
-          loadedSettings = {
-            ...loadedSettings,
-            recipients: parsed.recipients,
-            includeWeekends: parsed.includeWeekends || false
-          };
-          setUsingCachedSettings(true);
+
+    // Only check localStorage if NO data from database
+    if (loadedSettings.recipients.length === 0) {
+      const cachedSettings = localStorage.getItem('emailSettings');
+      if (cachedSettings) {
+        try {
+          const parsed = JSON.parse(cachedSettings);
+          if (parsed.recipients && Array.isArray(parsed.recipients)) {
+            loadedSettings = {
+              recipients: parsed.recipients.filter(Boolean).map(email => email.trim().toLowerCase()),
+              includeWeekends: parsed.includeWeekends || false
+            };
+            setUsingCachedSettings(true);
+            console.log('💾 Loaded from localStorage (backup):', loadedSettings.recipients);
+          }
+        } catch (e) {
+          console.error('Failed to parse cached settings:', e);
         }
-      } catch (e) {
-        console.error('Failed to parse cached settings:', e);
       }
     }
 
     setFormData(loadedSettings);
   }, [settings]);
 
-  // Save to localStorage whenever recipients change
+  // Only save to localStorage when OFFLINE
   useEffect(() => {
-    if (formData.recipients.length > 0) {
+    if (!isOnline && formData.recipients.length > 0) {
       const settingsToCache = {
         recipients: formData.recipients,
         includeWeekends: formData.includeWeekends,
-        lastUpdated: new Date().toISOString()
+        lastUpdated: new Date().toISOString(),
+        offline: true
       };
       localStorage.setItem('emailSettings', JSON.stringify(settingsToCache));
     }
-  }, [formData.recipients, formData.includeWeekends]);
+    
+    // Clear localStorage when online to avoid using stale data
+    if (isOnline && !usingCachedSettings) {
+      localStorage.removeItem('emailSettings');
+    }
+  }, [formData.recipients, formData.includeWeekends, isOnline, usingCachedSettings]);
 
   // Handle adding new email
   const handleAddEmail = () => {
@@ -336,7 +363,6 @@ export default function EmailSettingsModal({ settings, onSave, onClose }) {
           const errorData = await response.json();
           errorMessage = errorData.error || errorMessage;
         } catch {
-          // User-friendly status code messages
           const statusMessages = {
             400: 'Invalid request format',
             401: 'Authentication required',
@@ -386,63 +412,32 @@ export default function EmailSettingsModal({ settings, onSave, onClose }) {
 
     setIsSaving(true);
     
-    // Always save to localStorage first (as backup)
-    const settingsToSave = {
-      recipients: formData.recipients.map(email => email.trim().toLowerCase()),
-      includeWeekends: formData.includeWeekends,
-      lastSaved: new Date().toISOString()
-    };
-    
-    localStorage.setItem('emailSettings', JSON.stringify(settingsToSave));
-    
-    // Intercept ANY alerts or messages from the parent
-    const originalAlert = window.alert;
-    const originalConsoleLog = console.log;
-    let interceptedMessage = null;
-    
-    window.alert = (msg) => {
-      interceptedMessage = msg;
-      return true; // Pretend user clicked OK
-    };
-    
-    // Also intercept console logs that might contain localhost
-    console.log = (...args) => {
-      // Don't show console logs with localhost to users
-      const hasLocalhost = args.some(arg => 
-        typeof arg === 'string' && 
-        (arg.includes('localhost') || arg.includes('127.0.0.1'))
-      );
-      if (!hasLocalhost) {
-        originalConsoleLog.apply(console, args);
-      }
-    };
-    
     try {
       // Clean the data before sending
       const cleanFormData = {
-        ...formData,
-        recipients: formData.recipients.map(email => email.trim().toLowerCase())
+        recipients: formData.recipients.map(email => email.trim().toLowerCase()),
+        includeWeekends: formData.includeWeekends
       };
       
-      // Call onSave - it might return a response
+      console.log('💾 Saving to database:', cleanFormData);
+      
+      // Call onSave - this saves to the database
       const result = await onSave(cleanFormData);
       
-      // Check if there's a success message in the result
-      let successMessage = 'Email settings saved successfully';
+      // Clear localStorage after successful database save
+      localStorage.removeItem('emailSettings');
+      setUsingCachedSettings(false);
+      
+      // Show success message
+      let successMessage = 'Email settings saved to database';
       
       if (result && typeof result === 'object') {
         if (result.message) {
           successMessage = formatSuccessMessage(result.message);
-        } else if (result.success && result.data) {
-          successMessage = formatSuccessMessage('Settings updated successfully');
         }
       }
       
-      // Show clean success toast
       showToast('success', 'Success', successMessage);
-      
-      // Clear cached flag since we successfully saved to backend
-      setUsingCachedSettings(false);
       
       // Close modal after a brief delay
       setTimeout(() => {
@@ -450,22 +445,26 @@ export default function EmailSettingsModal({ settings, onSave, onClose }) {
       }, 500);
       
     } catch (error) {
-      console.error('Failed to save email settings to backend:', error);
+      console.error('❌ Failed to save email settings to backend:', error);
       
-      // Settings are still saved in localStorage even if backend save fails
-      const friendlyError = formatErrorMessage(error);
-      
-      // Show success toast for local save, error for backend
+      // If offline, save to localStorage as backup
       if (!isOnline) {
-        showToast('success', 'Saved Locally', 'Settings saved to browser storage. Will sync when server is back online.');
+        const settingsToCache = {
+          recipients: formData.recipients.map(email => email.trim().toLowerCase()),
+          includeWeekends: formData.includeWeekends,
+          lastSaved: new Date().toISOString(),
+          offline: true
+        };
+        localStorage.setItem('emailSettings', JSON.stringify(settingsToCache));
+        
+        showToast('success', 'Saved Offline', 'Settings saved to browser storage. Will sync when server is back online.');
+        setUsingCachedSettings(true);
       } else {
-        showToast('warning', 'Saved Locally', 'Settings saved to browser storage. Server sync failed: ' + friendlyError);
+        const friendlyError = formatErrorMessage(error);
+        showToast('error', 'Save Failed', 'Could not save to database: ' + friendlyError);
       }
       
     } finally {
-      // Restore original functions
-      window.alert = originalAlert;
-      console.log = originalConsoleLog;
       setIsSaving(false);
     }
   };
@@ -508,10 +507,14 @@ export default function EmailSettingsModal({ settings, onSave, onClose }) {
         {/* Connection Status Banner */}
         {!isOnline && (
           <div className="email-connection-status offline">
+            <WifiOff size={16} />
+            <span>Working offline - changes will be saved locally</span>
           </div>
         )}
         {usingCachedSettings && isOnline && (
           <div className="email-connection-status cached">
+            <AlertCircle size={16} />
+            <span>Using locally saved settings - save to update database</span>
           </div>
         )}
 
@@ -575,7 +578,7 @@ export default function EmailSettingsModal({ settings, onSave, onClose }) {
                     {formData.recipients.length} recipient{formData.recipients.length !== 1 ? 's' : ''}
                   </span>
                   {usingCachedSettings && (
-                    <span className="cached-badge">...</span>
+                    <span className="cached-badge">Local Copy</span>
                   )}
                 </div>
                 
@@ -742,7 +745,8 @@ export default function EmailSettingsModal({ settings, onSave, onClose }) {
                   <span className="email-summary-text">
                     {formData.recipients.length} recipient{formData.recipients.length !== 1 ? 's' : ''} configured
                   </span>
-                  {!isOnline && <span className="offline-indicator">(Offline)</span>}
+                  {usingCachedSettings && <span className="offline-indicator">(Local Storage)</span>}
+                  {!isOnline && !usingCachedSettings && <span className="offline-indicator">(Offline)</span>}
                 </div>
               )}
             </div>
@@ -775,7 +779,7 @@ export default function EmailSettingsModal({ settings, onSave, onClose }) {
                 ) : (
                   <>
                     <CheckCircle size={16} />
-                    <span>Save Settings</span>
+                    <span>Save to Database</span>
                   </>
                 )}
               </button>

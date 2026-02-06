@@ -5,9 +5,35 @@ import { query } from '../db.js';
 const router = express.Router();
 const emailService = new EmailService();
 
+// Helper function to parse PostgreSQL array
+const parsePgArray = (arr) => {
+  if (!arr) return [];
+  if (Array.isArray(arr)) return arr;
+  if (typeof arr === 'string') {
+    // Handle PostgreSQL array format: {email1,email2}
+    if (arr.startsWith('{') && arr.endsWith('}')) {
+      return arr
+        .slice(1, -1)
+        .split(',')
+        .map(email => email.trim().replace(/"/g, ''))
+        .filter(email => email);
+    }
+    // Handle JSON array string
+    try {
+      const parsed = JSON.parse(arr);
+      if (Array.isArray(parsed)) return parsed;
+    } catch (e) {
+      // Not JSON
+    }
+  }
+  return [];
+};
+
 // Get email settings
 router.get('/email-settings', async (req, res) => {
     try {
+        console.log('📨 Fetching email settings from database...');
+        
         const { rows } = await query('SELECT * FROM email_settings LIMIT 1');
 
         const defaultSettings = {
@@ -16,19 +42,22 @@ router.get('/email-settings', async (req, res) => {
         };
 
         if (rows.length === 0) {
+            console.log('📨 No settings found in database, returning defaults');
             return res.json(defaultSettings);
         }
 
-        // Ensure recipients is always an array
-        const recipients = rows[0].recipients || [];
+        // Parse recipients properly
+        const recipients = parsePgArray(rows[0].recipients);
+        
+        console.log('📨 Raw recipients from DB:', rows[0].recipients);
+        console.log('📨 Parsed recipients:', recipients);
+        
         const settings = {
-            ...rows[0],
-            recipients: Array.isArray(recipients) ? recipients : [],
-            includeWeekends: rows[0].include_weekends
+            recipients: recipients,
+            includeWeekends: rows[0].include_weekends || false
         };
 
-        console.log('📨 Retrieved recipients:', settings.recipients); // Debug log
-
+        console.log('✅ Sending settings to client:', settings);
         res.json(settings);
     } catch (error) {
         console.error('Error getting email settings:', error);
@@ -40,37 +69,63 @@ router.get('/email-settings', async (req, res) => {
 router.post('/email-settings', async (req, res) => {
     try {
         const settings = req.body;
+        
+        console.log('📝 Received save request:', settings);
 
-        const dbSettings = {
-            recipients: settings.recipients || [],
-            include_weekends: settings.includeWeekends || false
-        };
+        // Validate and clean recipients
+        const recipients = Array.isArray(settings.recipients) 
+            ? settings.recipients.map(email => email.trim().toLowerCase()).filter(email => email)
+            : [];
+        
+        const includeWeekends = settings.includeWeekends || false;
 
-        console.log('📝 Saving recipients:', dbSettings.recipients); // Debug log
+        console.log('📝 Cleaned recipients for saving:', recipients);
 
-        const { rows } = await query(`
-            INSERT INTO email_settings (recipients, include_weekends) 
-            VALUES ($1::text[], $2)
-            ON CONFLICT (id) DO UPDATE SET
-                recipients = EXCLUDED.recipients,
-                include_weekends = EXCLUDED.include_weekends,
-                created_at = CURRENT_TIMESTAMP,
-                updated_at = CURRENT_TIMESTAMP
-            RETURNING *
-        `, [dbSettings.recipients, dbSettings.include_weekends]);
+        // Check if we have existing settings
+        const checkResult = await query('SELECT id FROM email_settings LIMIT 1');
+        
+        let result;
+        
+        if (checkResult.rows.length === 0) {
+            // INSERT new record
+            console.log('📝 No existing settings, INSERTING new record');
+            result = await query(`
+                INSERT INTO email_settings (recipients, include_weekends) 
+                VALUES ($1, $2)
+                RETURNING *
+            `, [recipients, includeWeekends]);
+        } else {
+            // UPDATE existing record
+            console.log('📝 Updating existing record');
+            result = await query(`
+                UPDATE email_settings 
+                SET recipients = $1,
+                    include_weekends = $2,
+                    updated_at = CURRENT_TIMESTAMP
+                RETURNING *
+            `, [recipients, includeWeekends]);
+        }
 
-        console.log('✅ Saved recipients from DB:', rows[0]?.recipients); // Debug log
+        const savedRow = result.rows[0];
+        
+        // Parse the saved recipients back to show in response
+        const savedRecipients = parsePgArray(savedRow.recipients);
+        
+        console.log('✅ Saved to DB - parsed recipients:', savedRecipients);
 
         res.json({
             success: true,
-            message: 'Email settings saved',
-            data: rows[0]
+            message: 'Email settings saved successfully',
+            data: {
+                recipients: savedRecipients,
+                includeWeekends: savedRow.include_weekends
+            }
         });
     } catch (error) {
         console.error('❌ Error saving email settings:', error);
         res.status(500).json({
             success: false,
-            error: error.message
+            error: 'Failed to save email settings: ' + error.message
         });
     }
 });
@@ -81,7 +136,7 @@ router.get('/debug-email', async (req, res) => {
     const { rows } = await query('SELECT * FROM email_settings LIMIT 1');
     
     if (rows.length === 0) {
-      return res.json({ message: 'No email settings found' });
+      return res.json({ message: 'No email settings found in database' });
     }
     
     const row = rows[0];
@@ -119,15 +174,28 @@ router.post('/send-email-now', async (req, res) => {
             });
         }
 
-        const settings = rows[0];
+        const row = rows[0];
+        const recipients = parsePgArray(row.recipients);
+        
+        if (recipients.length === 0) {
+            return res.status(400).json({
+                success: false,
+                error: 'Please configure email recipients first in Email Settings'
+            });
+        }
+
+        const settings = {
+            recipients: recipients,
+            include_weekends: row.include_weekends || false
+        };
+
+        console.log('🔍 send-email-now - recipients:', recipients);
 
         // Get today's schedule data
         const today = new Date();
         const scheduleData = await emailService.getTodaysScheduleFromDB(today);
-            console.log('🔍 send-email-now - recipients:', settings.recipients);
-            console.log('🔍 send-email-now - scheduleData length:', scheduleData?.length);
 
-        const isWeekendDay = today.getDay() === 0 || today.getDay() === 6; // 0 = Sunday, 6 = Saturday
+        const isWeekendDay = today.getDay() === 0 || today.getDay() === 6;
         if (isWeekendDay && !settings.include_weekends) {
             return res.status(400).json({
                 success: false,
@@ -148,7 +216,7 @@ router.post('/send-email-now', async (req, res) => {
             success: true,
             message: 'Email sent successfully',
             messageId: result.messageId,
-            recipients: settings.recipients,
+            recipients: recipients,
             employeesCount: scheduleData.length,
             isWeekend: isWeekendDay
         });
@@ -204,6 +272,23 @@ router.post('/test-email', async (req, res) => {
         res.status(500).json({
             success: false,
             error: error.message
+        });
+    }
+});
+
+// Health check endpoint
+router.get('/health', async (req, res) => {
+    try {
+        await query('SELECT 1');
+        res.json({ 
+            status: 'healthy',
+            timestamp: new Date().toISOString()
+        });
+    } catch (error) {
+        console.error('❌ Health check failed:', error);
+        res.status(500).json({ 
+            status: 'unhealthy',
+            error: error.message 
         });
     }
 });

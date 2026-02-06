@@ -11,9 +11,14 @@ const ScheduleTable = ({
   saving,
   onCellClick,
   onRemoveStatus,
-  // getStatuses,
   setActiveDropdown,
-  toggleStatus
+  toggleStatus,
+  scheduleTypes = [],
+  statusStates,
+  onStatusStateChange,
+  availableStates = [],
+  onScheduleUpdate, // NEW: Add this prop to handle schedule updates
+  refreshSchedules, // NEW: Add this prop for refreshing
 }) => {
   return (
     <table className="schedule-table">
@@ -40,10 +45,15 @@ const ScheduleTable = ({
             saving={saving}
             onCellClick={onCellClick}
             onRemoveStatus={onRemoveStatus}
-            // getStatuses={getStatuses}
             setActiveDropdown={setActiveDropdown}
             toggleStatus={toggleStatus}
-            employeesList={employees} 
+            employeesList={employees}
+            scheduleTypes={scheduleTypes}
+            statusStates={statusStates}
+            onStatusStateChange={onStatusStateChange}
+            availableStates={availableStates}
+            onScheduleUpdate={onScheduleUpdate} // Pass down
+            refreshSchedules={refreshSchedules} // Pass down
           />
         ))}
       </tbody>

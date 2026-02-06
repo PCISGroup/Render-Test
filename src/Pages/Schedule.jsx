@@ -31,7 +31,6 @@ const useFetchWithRetry = (endpoint, options = {}, retries = 3) => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
-  /*
   const fetchData = useCallback(
     async (attempt = 1) => {
       try {
@@ -40,25 +39,111 @@ const useFetchWithRetry = (endpoint, options = {}, retries = 3) => {
         const url = `${API_BASE_URL}${endpoint}`;
         console.log(`🔄 Fetching from: ${url}, attempt ${attempt}`);
 
+        // 🚨 DEBUG: Check if supabase exists
+        console.log('🔍 Debug - supabase object:', supabase);
+        console.log('🔍 Debug - typeof supabase:', typeof supabase);
+        console.log('🔍 Debug - supabase.auth:', supabase?.auth);
+
+        let token = null;
+        let sessionData = null;
+
+        // METHOD 1: Try to get session from supabase
+        if (supabase && supabase.auth && typeof supabase.auth.getSession === 'function') {
+          try {
+            console.log('🔐 Trying to get session from supabase...');
+            const { data, error } = await supabase.auth.getSession();
+            console.log('🔐 Supabase getSession result:', { data, error });
+
+            if (error) {
+              console.error('❌ Supabase session error:', error);
+            } else {
+              sessionData = data?.session;
+              token = sessionData?.access_token;
+              console.log('🔑 Token from supabase:', !!token);
+              console.log('👤 User from session:', sessionData?.user?.email);
+            }
+          } catch (supabaseErr) {
+            console.error('❌ Error calling supabase.auth.getSession:', supabaseErr);
+          }
+        } else {
+          console.error('❌ Supabase.auth.getSession is not available!');
+          console.error('❌ Check if supabase is imported correctly');
+        }
+
+        // METHOD 2: Emergency fallback - check localStorage
+        if (!token) {
+          console.log('🆘 No token from supabase, checking localStorage...');
+          try {
+            // Try multiple possible localStorage keys
+            const possibleKeys = [
+              'supabase.auth.token',
+              'sb-access-token',
+              'sb-' + window.location.hostname + '-auth-token'
+            ];
+            for (const key of possibleKeys) {
+              const stored = localStorage.getItem(key);
+              if (stored) {
+                console.log(`📦 Found data in localStorage key: ${key}`);
+                try {
+                  const parsed = JSON.parse(stored);
+                  token = parsed?.currentSession?.access_token ||
+                    parsed?.access_token ||
+                    parsed?.token;
+                  if (token) {
+                    console.log(`🔑 Found token in localStorage: ${token.substring(0, 20)}...`);
+                    break;
+                  }
+                } catch (e) {
+                  console.warn(`⚠️ Could not parse localStorage key ${key}:`, e);
+                }
+              }
+            }
+          } catch (localErr) {
+            console.error('❌ Error reading localStorage:', localErr);
+          }
+        }
+
+        const headers = {
+          "Content-Type": "application/json",
+          ...options.headers,
+        };
+
+        if (token) {
+          headers['Authorization'] = `Bearer ${token}`;
+        }
+
         const response = await fetch(url, {
           credentials: 'include',
-          headers: {
-            "Content-Type": "application/json",
-            ...options.headers,
-          },
+          headers: headers,
           ...options,
         });
 
         if (!response.ok) {
-          throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+          let errorDetail = response.statusText;
+          try {
+            const errorText = await response.text();
+            try {
+              const errorJson = JSON.parse(errorText);
+              errorDetail = errorJson.error || errorJson.message || errorText;
+            } catch {
+              errorDetail = errorText || response.statusText;
+            }
+          } catch (readErr) {
+            console.error('❌ Could not read error response:', readErr);
+          }
+
+          throw new Error(`HTTP ${response.status}: ${errorDetail}`);
         }
+
         const result = await response.json();
-        console.log(`✅ API Response from ${endpoint}:`, result);
         setData(result);
         return result;
+
       } catch (err) {
         console.error(`❌ API Error for ${endpoint}:`, err.message);
+
         if (attempt < retries) {
+          console.log(`🔄 Retrying in ${1000 * attempt}ms...`);
           setTimeout(() => fetchData(attempt + 1), 1000 * attempt);
         } else {
           setError(err.message);
@@ -66,181 +151,16 @@ const useFetchWithRetry = (endpoint, options = {}, retries = 3) => {
       } finally {
         setLoading(false);
       }
-    },
-    [endpoint, retries]
-  );*/
-
-  const fetchData = useCallback(
-  async (attempt = 1) => {
-    try {
-      setLoading(true);
-      setError(null);
-      const url = `${API_BASE_URL}${endpoint}`;
-      console.log(`🔄 Fetching from: ${url}, attempt ${attempt}`);
-
-      // 🚨 DEBUG: Check if supabase exists
-      console.log('🔍 Debug - supabase object:', supabase);
-      console.log('🔍 Debug - typeof supabase:', typeof supabase);
-      console.log('🔍 Debug - supabase.auth:', supabase?.auth);
-      
-      let token = null;
-      let sessionData = null;
-      
-      // METHOD 1: Try to get session from supabase
-      if (supabase && supabase.auth && typeof supabase.auth.getSession === 'function') {
-        try {
-          console.log('🔐 Trying to get session from supabase...');
-          const { data, error } = await supabase.auth.getSession();
-          console.log('🔐 Supabase getSession result:', { data, error });
-          
-          if (error) {
-            console.error('❌ Supabase session error:', error);
-          } else {
-            sessionData = data?.session;
-            token = sessionData?.access_token;
-            console.log('🔑 Token from supabase:', !!token);
-            console.log('👤 User from session:', sessionData?.user?.email);
-          }
-        } catch (supabaseErr) {
-          console.error('❌ Error calling supabase.auth.getSession:', supabaseErr);
-        }
-      } else {
-        console.error('❌ Supabase.auth.getSession is not available!');
-        console.error('❌ Check if supabase is imported correctly');
-      }
-      
-      // METHOD 2: Emergency fallback - check localStorage
-      if (!token) {
-        console.log('🆘 No token from supabase, checking localStorage...');
-        try {
-          // Try multiple possible localStorage keys
-          const possibleKeys = [
-            'supabase.auth.token',
-            'sb-access-token',
-            'sb-' + window.location.hostname + '-auth-token'
-          ];
-          
-          for (const key of possibleKeys) {
-            const stored = localStorage.getItem(key);
-            if (stored) {
-              console.log(`📦 Found data in localStorage key: ${key}`);
-              try {
-                const parsed = JSON.parse(stored);
-                // Try different possible token locations
-                token = parsed?.currentSession?.access_token || 
-                        parsed?.access_token || 
-                        parsed?.token;
-                if (token) {
-                  console.log(`🔑 Found token in localStorage: ${token.substring(0, 20)}...`);
-                  break;
-                }
-              } catch (e) {
-                console.warn(`⚠️ Could not parse localStorage key ${key}:`, e);
-              }
-            }
-          }
-        } catch (localErr) {
-          console.error('❌ Error reading localStorage:', localErr);
-        }
-      }
-      
-      // METHOD 3: Check cookies as last resort
-      if (!token) {
-        console.log('🍪 Checking cookies...');
-        const cookies = document.cookie.split(';');
-        for (const cookie of cookies) {
-          const [name, value] = cookie.trim().split('=');
-          if (name.includes('access_token') || name.includes('sb-access-token')) {
-            token = value;
-            console.log(`🍪 Found token in cookie: ${name.substring(0, 20)}...`);
-            break;
-          }
-        }
-      }
-
-      const headers = {
-        "Content-Type": "application/json",
-        ...options.headers,
-      };
-
-      if (token) {
-        headers['Authorization'] = `Bearer ${token}`;
-        console.log('✅ Added Authorization header with token');
-          console.log('🔍 Token being sent (first 50 chars):', token.substring(0, 50) + '...');
-  console.log('🔍 Token length:', token.length);
-  console.log('🔍 Token starts with "eyJ"?', token.startsWith('eyJ'));
-      } else {
-        console.warn('⚠️ No authorization token available for request');
-        console.warn('⚠️ Request will likely fail with 401');
-      }
-      
-      console.log('📤 Final headers being sent:', headers);
-      console.log('📤 Full request config:', {
-        url,
-        credentials: 'include',
-        headers,
-        ...options
-      });
-
-      const response = await fetch(url, {
-        credentials: 'include',
-        headers: headers,
-        ...options,
-      });
-
-      // Log response details
-      console.log(`📥 Response status: ${response.status} ${response.statusText}`);
-      console.log(`📥 Response headers:`, Object.fromEntries([...response.headers.entries()]));
-      
-      if (!response.ok) {
-        // Try to get error details
-        let errorDetail = response.statusText;
-        try {
-          const errorText = await response.text();
-          console.error('❌ Error response body:', errorText);
-          try {
-            const errorJson = JSON.parse(errorText);
-            errorDetail = errorJson.error || errorJson.message || errorText;
-          } catch {
-            errorDetail = errorText || response.statusText;
-          }
-        } catch (readErr) {
-          console.error('❌ Could not read error response:', readErr);
-        }
-        
-        throw new Error(`HTTP ${response.status}: ${errorDetail}`);
-      }
-      
-      const result = await response.json();
-      console.log(`✅ API Response from ${endpoint}:`, result);
-      setData(result);
-      return result;
-      
-    } catch (err) {
-      console.error(`❌ API Error for ${endpoint}:`, err.message);
-      console.error(`❌ Full error:`, err);
-      
-      if (attempt < retries) {
-        console.log(`🔄 Retrying in ${1000 * attempt}ms...`);
-        setTimeout(() => fetchData(attempt + 1), 1000 * attempt);
-      } else {
-        setError(err.message);
-      }
-    } finally {
-      setLoading(false);
-    }
-  },
-  [endpoint, retries]
-);
+    }, [endpoint, JSON.stringify(options)]); // Stringify options to avoid object reference issues
 
   useEffect(() => {
     fetchData();
   }, [fetchData]);
 
-  const refetch = useCallback(async () => {
+  const refetch = useCallback(() => {
     console.log(`🔄 Manual refetch triggered for: ${endpoint}`);
-    await fetchData();
-  }, [fetchData]);
+    fetchData();
+  }, [fetchData, endpoint]);
 
   return { data, loading, error, refetch };
 };
@@ -266,6 +186,8 @@ export default function SchedulePage() {
     includeWeekends: false
   });
   const [sendingEmail, setSendingEmail] = useState(false);
+  const [statusStates, setStatusStates] = useState({});
+  const [availableStates, setAvailableStates] = useState([]);
 
   const {
     data: employeesData,
@@ -282,11 +204,11 @@ export default function SchedulePage() {
   } = useFetchWithRetry("/api/statuses");
 
   const {
-  data: clientsData,
-  loading: clientsLoading,
-  error: clientsError,
-  refetch: refetchClients
-} = useFetchWithRetry("/api/clients");
+    data: clientsData,
+    loading: clientsLoading,
+    error: clientsError,
+    refetch: refetchClients
+  } = useFetchWithRetry("/api/clients");
 
   const {
     data: scheduleData,
@@ -295,30 +217,255 @@ export default function SchedulePage() {
     refetch: refetchSchedules
   } = useFetchWithRetry("/api/schedule");
 
+  const {
+    data: scheduleTypesData,
+    loading: scheduleTypesLoading,
+    error: scheduleTypesError,
+    refetch: refetchScheduleTypes
+  } = useFetchWithRetry("/api/schedule-types");
+
+  const {
+    data: scheduleStatesData,
+    loading: scheduleStatesLoading,
+    error: scheduleStatesError,
+    refetch: refetchScheduleStates
+  } = useFetchWithRetry("/api/schedule-states/all");
+
+
   const employees = useMemo(() => {
     return Array.isArray(employeesData) ? employeesData : [];
   }, [employeesData]);
 
   const statusConfigs = useMemo(() => {
-  const statusArray = Array.isArray(statusesData) ? statusesData : (statusesData?.data || []);
-  const clientArray = Array.isArray(clientsData) ? clientsData : (clientsData?.data || []);
-  
-  // Show clients first in the dropdown, then statuses
-  return [
-    ...clientArray.map(item => ({
-      id: `client-${item.id}`,
-      name: item.name,
-      color: item.color,
-      type: 'client'
-    })),
-    ...statusArray.map(item => ({
-      id: `status-${item.id}`,
-      name: item.label || item.name,
-      color: item.color,
-      type: 'status'
-    }))
-  ];
-}, [statusesData, clientsData]);
+    const statusArray = Array.isArray(statusesData) ? statusesData : (statusesData?.data || []);
+    const clientArray = Array.isArray(clientsData) ? clientsData : (clientsData?.data || []);
+
+    // Show clients first in the dropdown, then statuses
+    return [
+      ...clientArray.map(item => ({
+        id: `client-${item.id}`,
+        name: item.name,
+        color: item.color,
+        type: 'client'
+      })),
+      ...statusArray.map(item => ({
+        id: `status-${item.id}`,
+        name: item.label || item.name,
+        color: item.color,
+        type: 'status'
+      }))
+    ];
+  }, [statusesData, clientsData]);
+
+  const scheduleTypes = useMemo(() => {
+    return Array.isArray(scheduleTypesData) ? scheduleTypesData : [];
+  }, [scheduleTypesData]);
+
+
+  const dateRange = useMemo(() => {
+    if (viewType === "week") {
+      const start = startOfWeek(currentDate, { weekStartsOn: 1 });
+      return Array.from({ length: 7 }, (_, i) => addDays(start, i));
+    } else {
+      const start = startOfMonth(currentDate);
+      const end = endOfMonth(currentDate);
+      return eachDayOfInterval({ start, end });
+    }
+  }, [currentDate, viewType]);
+
+  // 3. Add this useEffect to load available states ONCE:
+  useEffect(() => {
+    if (scheduleStatesData?.success && scheduleStatesData?.states) {
+      console.log("✅ Loaded available states:", scheduleStatesData.states);
+      setAvailableStates(scheduleStatesData.states);
+    } else {
+      // Default states if API fails
+      setAvailableStates([
+        { state_name: 'completed', display_name: 'Completed', icon: '✓' },
+        { state_name: 'cancelled', display_name: 'Cancelled', icon: '✕' },
+        { state_name: 'postponed', display_name: 'Postponed', icon: '⏱' }
+      ]);
+    }
+  }, [scheduleStatesData]);
+
+  // 4. Add this useEffect to load schedule states for all employees:
+  useEffect(() => {
+    console.log("🔄 Schedule states effect triggered", {
+      employees: employees.length,
+      dateRange: dateRange.length
+    });
+
+    if (!employees.length || !dateRange.length) return;
+
+    const loadScheduleStates = async () => {
+      try {
+        console.log("🔄 FRESH LOADING schedule states (NO CACHE)...");
+
+        // Force fresh load by adding timestamp
+        const timestamp = Date.now();
+
+        let token = null;
+        if (supabase?.auth?.getSession) {
+          const { data: { session } } = await supabase.auth.getSession();
+          token = session?.access_token;
+        }
+
+        if (!token) {
+          console.warn("⚠️ No auth token");
+          return;
+        }
+
+        const allStates = {};
+        const startDate = format(dateRange[0], 'yyyy-MM-dd');
+        const endDate = format(dateRange[dateRange.length - 1], 'yyyy-MM-dd');
+
+        // Load ALL data fresh - don't merge with existing
+        for (const employee of employees) {
+          const employeeId = employee.id;
+
+          const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:5001';
+          // Add timestamp to prevent caching
+          const url = `${API_BASE_URL}/api/schedule-states?employeeId=${employeeId}&startDate=${startDate}&endDate=${endDate}&_=${timestamp}`;
+
+          console.log(`🔗 Fresh loading states for employee ${employeeId}`);
+
+          try {
+            const response = await fetch(url, {
+              headers: {
+                'Authorization': `Bearer ${token}`,
+                'Content-Type': 'application/json',
+                'Cache-Control': 'no-cache, no-store, must-revalidate',
+                'Pragma': 'no-cache'
+              },
+              cache: 'no-store'
+            });
+
+            if (response.ok) {
+              const result = await response.json();
+
+              if (result.success && result.scheduleStates) {
+                result.scheduleStates.forEach(state => {
+                  const dateStr = state.date;
+                  const key = `${employeeId}_${dateStr}`;
+
+                  if (!allStates[key]) {
+                    allStates[key] = {};
+                  }
+
+                  if (state.status_id && state.state_name) {
+                    // CRITICAL: Store state using BASE client ID (without type suffix)
+                    // This ensures state persists across type changes
+                    const baseStatusId = state.status_id.startsWith('client-')
+                      ? state.status_id.split('_type-')[0]
+                      : state.status_id;
+
+                    // Store with ALL data from backend
+                    allStates[key][baseStatusId] = {
+                      state: state.state_name.toLowerCase(),
+                      postponedDate: state.postponed_date || null,
+                      // These should come from backend
+                      reason: state.reason || state.cancellation_reason || '',
+                      note: state.note || state.cancellation_note || '',
+                      cancelledAt: state.cancelled_at || null,
+                      loadedAt: new Date().toISOString()
+                    };
+                  }
+                });
+              }
+            }
+          } catch (err) {
+            console.error(`❌ Error loading states for employee ${employeeId}:`, err);
+          }
+        }
+
+        console.log("🔄 SETTING FRESH STATUS STATES:", allStates);
+        // REPLACE, don't merge
+        setStatusStates(allStates);
+
+      } catch (error) {
+        console.error("❌ Main error loading schedule states:", error);
+      }
+    };
+
+    // Load immediately
+    loadScheduleStates();
+
+  }, [employees, dateRange, lastUpdateTime]);
+
+  // Add statusStates to the loading check
+  const loading = employeesLoading || statusesLoading || scheduleLoading ||
+    scheduleTypesLoading || scheduleStatesLoading;
+
+  const error = employeesError || statusesError || scheduleError || scheduleTypesError;
+
+  // Add to the useEffect that initializes schedules to also initialize states
+  useEffect(() => {
+    if (!scheduleData) return;
+
+    console.log("🔄 INITIALIZING schedules from API data:", scheduleData);
+    const schedulesState = {};
+    Object.keys(scheduleData).forEach(employeeId => {
+      const employeeSchedules = scheduleData[employeeId];
+      schedulesState[employeeId] = {};
+      Object.keys(employeeSchedules).forEach(date => {
+        schedulesState[employeeId][date] = employeeSchedules[date].map(item => {
+          // Handle "with_employeeId_statusId" format
+          if (typeof item === 'string' && item.startsWith('with_')) {
+            return item; // Keep as "with_employeeId_statusId"
+          }
+          // Normal status
+          return typeof item === 'number' ? item.toString() : item;
+        });
+      });
+    });
+
+    console.log("📊 Setting schedules state:", schedulesState);
+    setSchedules(schedulesState);
+  }, [scheduleData]);
+  const handleStatusStateChange = useCallback((employeeId, dateStr, statusId, newState) => {
+    console.log("🔄 Status state changed:", { employeeId, dateStr, statusId, newState });
+
+    const key = `${employeeId}_${dateStr}`;
+
+    setStatusStates(prev => {
+      const newStates = { ...prev };
+
+      if (!newStates[key]) {
+        newStates[key] = {};
+      }
+
+      if (newState) {
+        newStates[key][statusId] = newState;
+      } else {
+        delete newStates[key][statusId];
+      }
+
+      return newStates;
+    });
+
+    // Also update the local schedule data
+    setSchedules(prev => {
+      const updated = { ...prev };
+      if (!updated[employeeId]) updated[employeeId] = {};
+      if (!updated[employeeId][dateStr]) {
+        updated[employeeId][dateStr] = [];
+      }
+
+      // If postponed state, add to the postponed date as well
+      if (newState?.state === 'postponed' && newState.postponedDate) {
+        const postponedDateStr = newState.postponedDate.split('T')[0];
+        if (!updated[employeeId][postponedDateStr]) {
+          updated[employeeId][postponedDateStr] = [];
+        }
+        // Add status to postponed date if not already there
+        if (!updated[employeeId][postponedDateStr].includes(statusId)) {
+          updated[employeeId][postponedDateStr] = [...updated[employeeId][postponedDateStr], statusId];
+        }
+      }
+
+      return updated;
+    });
+  }, []);
 
   // Initialize schedules from API data
   useEffect(() => {
@@ -348,33 +495,85 @@ export default function SchedulePage() {
   useEffect(() => {
     const loadEmailSettings = async () => {
       try {
-        const response = await fetch(`${API_BASE_URL}/api/email-settings`, {
-          credentials: 'include'
-        });
+        const response = await fetch(`${API_BASE_URL}/api/email-settings`);
         if (response.ok) {
-          const settings = await response.json();
-          setEmailSettings(settings);
+          const data = await response.json();
+          setEmailSettings(data);
         }
       } catch (error) {
         console.error('Failed to load email settings:', error);
       }
     };
+
     loadEmailSettings();
   }, []);
+  // Update the event listener useEffect:
+  useEffect(() => {
+    const handleScheduleUpdated = (event) => {
+      const { type, employeeId, fromDate, toDate, statusId } = event.detail;
 
-  const loading = employeesLoading || statusesLoading || scheduleLoading;
-  const error = employeesError || statusesError || scheduleError;
+      if (type === 'postponed') {
+        console.log("🎯 Event received - postponing:", { employeeId, fromDate, toDate, statusId });
 
-  const dateRange = useMemo(() => {
-    if (viewType === "week") {
-      const start = startOfWeek(currentDate, { weekStartsOn: 1 });
-      return Array.from({ length: 7 }, (_, i) => addDays(start, i));
-    } else {
-      const start = startOfMonth(currentDate);
-      const end = endOfMonth(currentDate);
-      return eachDayOfInterval({ start, end });
-    }
-  }, [currentDate, viewType]);
+        // Update schedules state
+        setSchedules(prev => {
+          const updated = { ...prev };
+
+          // Remove from old date
+          if (updated[employeeId] && updated[employeeId][fromDate]) {
+            updated[employeeId][fromDate] = updated[employeeId][fromDate].filter(
+              s => s !== statusId
+            );
+
+            if (updated[employeeId][fromDate].length === 0) {
+              delete updated[employeeId][fromDate];
+            }
+          }
+
+          // Add to new date
+          if (!updated[employeeId]) {
+            updated[employeeId] = {};
+          }
+          if (!updated[employeeId][toDate]) {
+            updated[employeeId][toDate] = [];
+          }
+
+          if (!updated[employeeId][toDate].includes(statusId)) {
+            updated[employeeId][toDate] = [...updated[employeeId][toDate], statusId];
+          }
+
+          console.log("✅ Updated from event listener:", updated);
+          return updated;
+        });
+
+        // ALSO update statusStates in the event listener
+        setStatusStates(prev => {
+          const newStates = { ...prev };
+          const newKey = `${employeeId}_${toDate}`;
+
+          if (!newStates[newKey]) {
+            newStates[newKey] = {};
+          }
+
+          // Set postponed state on new date
+          newStates[newKey][statusId] = {
+            state: 'postponed',
+            isTBA: false,
+            postponedDate: fromDate
+          };
+
+          console.log("✅ Event listener updated statusStates:", newStates);
+          return newStates;
+        });
+      }
+    };
+
+    window.addEventListener('scheduleUpdated', handleScheduleUpdated);
+
+    return () => {
+      window.removeEventListener('scheduleUpdated', handleScheduleUpdated);
+    };
+  }, []);
 
   const handlePrevious = () => {
     setCurrentDate((prev) =>
@@ -396,296 +595,441 @@ export default function SchedulePage() {
       setShowCalendarModal(false);
     }
   };
-  /*
-    const saveScheduleToDB = useCallback(async (employeeId, dateStr, statusIds) => {
-      try {
-        console.log("💾 SAVING to DB:", { employeeId, dateStr, statusIds });
-        const response = await fetch(`${API_BASE_URL}/api/schedule`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            employeeId: parseInt(employeeId),
-            date: dateStr,
-            statusIds: statusIds.map(id => parseInt(id))
-          }),
-        });
-  
-        if (!response.ok) {
-          const errorData = await response.json();
-          throw new Error(errorData.error || `Failed to save schedule: ${response.status}`);
+  // REPLACE your handleScheduleUpdate function with this:
+  const handleScheduleUpdate = useCallback((updateInfo) => {
+    console.log("📦 Parent: Handling schedule update:", updateInfo);
+
+    if (updateInfo.type === 'postponed') {
+      const { employeeId, fromDate, toDate, statusId } = updateInfo;
+
+      console.log("🚚 Moving status in parent schedules:", { employeeId, fromDate, toDate, statusId });
+
+      // Update schedules state
+      setSchedules(prev => {
+        const updated = { ...prev };
+
+        // Remove from old date
+        if (updated[employeeId] && updated[employeeId][fromDate]) {
+          updated[employeeId][fromDate] = updated[employeeId][fromDate].filter(
+            s => s !== statusId
+          );
+
+          if (updated[employeeId][fromDate].length === 0) {
+            delete updated[employeeId][fromDate];
+          }
         }
-  
-        const result = await response.json();
-        console.log("✅ SAVE SUCCESSFUL:", result);
-  
-        return result;
-      } catch (error) {
-        console.error("❌ FAILED to save schedule:", error);
-        throw error;
+
+        // Add to new date
+        if (!updated[employeeId]) {
+          updated[employeeId] = {};
+        }
+        if (!updated[employeeId][toDate]) {
+          updated[employeeId][toDate] = [];
+        }
+
+        if (!updated[employeeId][toDate].includes(statusId)) {
+          updated[employeeId][toDate] = [...updated[employeeId][toDate], statusId];
+        }
+
+        console.log("✅ Updated schedules after move:", updated);
+        return updated;
+      });
+
+      // CRITICAL: Update statusStates to include postponed state on NEW date
+      setStatusStates(prev => {
+        const newStates = { ...prev };
+        const oldKey = `${employeeId}_${fromDate}`;
+        const newKey = `${employeeId}_${toDate}`;
+
+        console.log("🔄 Transferring status state:", { oldKey, newKey });
+
+        // If there was a state on the old date, transfer it
+        if (newStates[oldKey] && newStates[oldKey][statusId]) {
+          const oldState = newStates[oldKey][statusId];
+
+          // Create new state for postponed item
+          const newState = {
+            state: 'postponed',
+            isTBA: false,
+            postponedDate: fromDate // Store original date
+          };
+
+          // Initialize new key if needed
+          if (!newStates[newKey]) {
+            newStates[newKey] = {};
+          }
+
+          // Set postponed state on NEW date
+          newStates[newKey][statusId] = newState;
+
+          console.log("✅ Transferred state to new date:", {
+            from: oldState,
+            to: newState
+          });
+
+          // Remove from old date
+          delete newStates[oldKey][statusId];
+
+          // Clean up empty object
+          if (Object.keys(newStates[oldKey]).length === 0) {
+            delete newStates[oldKey];
+          }
+        } else {
+          // If no existing state, create a new postponed state
+          if (!newStates[newKey]) {
+            newStates[newKey] = {};
+          }
+
+          newStates[newKey][statusId] = {
+            state: 'postponed',
+            isTBA: false,
+            postponedDate: fromDate
+          };
+
+          console.log("✅ Created new postponed state on new date");
+        }
+
+        console.log("📊 Final statusStates:", newStates);
+        return newStates;
+      });
+    }
+  }, []);
+  const saveScheduleToDB = async (employeeId, dateStr, statusIds) => {
+    console.log("💾 SAVING:", { employeeId, dateStr, statusIds });
+
+    const items = [];
+
+    for (const id of statusIds) {
+      try {
+        if (typeof id === 'string' && id.startsWith('with_')) {
+          // "with_1_status-5"
+          const parts = id.split('_');
+          const withEmployeeId = parseInt(parts[1], 10);
+          const statusIdStr = parts[2];
+          const [type, typeIdStr] = statusIdStr.split('-');
+          const parsedId = parseInt(typeIdStr, 10);
+
+          items.push({
+            id: parsedId,
+            type: type,
+            withEmployeeId: isNaN(withEmployeeId) ? null : withEmployeeId
+          });
+        } else if (typeof id === 'string' && id.includes('_type-')) {
+          // "client-1_type-2" format
+          const [clientPart, typePart] = id.split('_type-');
+          const clientId = parseInt(clientPart.replace('client-', ''), 10);
+          const typeId = parseInt(typePart, 10);
+
+          items.push({
+            clientId: clientId,
+            scheduleTypeId: typeId,
+            type: 'client-with-type'
+          });
+        } else if (typeof id === 'string' && id.startsWith('client-')) {
+          // "client-1" format (client without type)
+          const clientId = parseInt(id.replace('client-', ''), 10);
+
+          items.push({
+            clientId: clientId,
+            scheduleTypeId: null,
+            type: 'client'
+          });
+        } else if (typeof id === 'string' && id.startsWith('status-')) {
+          // "status-1" format
+          const statusId = parseInt(id.replace('status-', ''), 10);
+
+          items.push({
+            id: statusId,
+            type: 'status'
+          });
+        }
+      } catch (err) {
+        console.error("❌ Error parsing status id:", id, err);
       }
-    }, [API_BASE_URL]);*/
+    }
 
-  /*
-  const saveScheduleToDB = useCallback(async (employeeId, dateStr, statusIds, withEmployeeId = null) => {
-  try {
-    console.log("💾 SAVING to DB:", { employeeId, dateStr, statusIds, withEmployeeId });
+    console.log("📤 Sending to API:", items);
 
-    // Find the "With ..." status
-    const withStatus = statusConfigs.find(s => s.name === "With ...");
-
-    // Convert status IDs properly
-    const apiStatusIds = statusIds.map(id => {
-      // Handle "with_employeeId_statusId" format
-      if (typeof id === 'string' && id.startsWith('with_')) {
-        const parts = id.split('_');
-        const statusIdPart = parts[2]; // Get the status ID part like "status-456"
-        // Extract just the number from "status-456" or "client-456"
-        const match = statusIdPart.match(/\d+/);
-        return match ? parseInt(match[0]) : null;
-      }
-      
-      // Handle normal status/clients with prefixes like "status-123" or "client-456"
-      if (typeof id === 'string' && (id.startsWith('status-') || id.startsWith('client-'))) {
-        const match = id.match(/\d+/);
-        return match ? parseInt(match[0]) : null;
-      }
-      
-      // If it's already a number
-      return typeof id === 'number' ? id : parseInt(id);
-    }).filter(id => id !== null && !isNaN(id) && id > 0);
-
-    console.log("📤 Converted status IDs for API:", apiStatusIds);
+    let token = null;
+    try { const { data: { session } } = await supabase.auth.getSession(); token = session?.access_token; } catch (e) { }
 
     const response = await fetch(`${API_BASE_URL}/api/schedule`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
       body: JSON.stringify({
-        employeeId: parseInt(employeeId),
+        employeeId: parseInt(employeeId, 10),
         date: dateStr,
-        statusIds: apiStatusIds,
-        withEmployeeId: withEmployeeId ? parseInt(withEmployeeId) : null
+        items
       }),
     });
 
     if (!response.ok) {
-      const errorData = await response.json();
-      throw new Error(errorData.error || `Failed to save schedule: ${response.status}`);
+      const txt = await response.text();
+      console.error('Save failed response:', response.status, txt);
+      throw new Error('Save failed');
     }
-
-    const result = await response.json();
-    console.log("✅ SAVE SUCCESSFUL:", result);
-    return result;
-  } catch (error) {
-    console.error("❌ FAILED to save schedule:", error);
-    throw error;
+    return await response.json();
   }
-}, [API_BASE_URL, statusConfigs]);*/
 
-const saveScheduleToDB = async (employeeId, dateStr, statusIds) => {
-  console.log("💾 SAVING:", { employeeId, dateStr, statusIds });
+  // ========== FIXED: DECLARE HELPER FUNCTIONS BEFORE USING THEM ==========
 
-  const items = [];
-
-  for (const id of statusIds) {
+  // Add this helper function in SchedulePage.js (MUST BE BEFORE toggleStatus)
+  const deleteStateFromBackend = async (employeeId, dateStr, statusId) => {
     try {
-      if (typeof id === 'string' && id.startsWith('with_')) {
-        // "with_1_status-5" or "with_1_client-3"
-        const parts = id.split('_');
-        const withEmployeeId = parseInt(parts[1], 10);
-        const typeAndId = parts[2]; // "client-3" or "status-5"
-        const [type, typeIdStr] = typeAndId.split('-');
-        const parsedId = parseInt(typeIdStr, 10);
+      const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:5001';
+      const url = `${API_BASE_URL}/api/schedule-state`;
 
-        if (!type || isNaN(parsedId)) {
-          console.warn("⚠️ Skipping invalid with_ item:", id);
-          continue;
-        }
-
-        items.push({
-          id: parsedId,
-          type: type, // 'client' or 'status'
-          withEmployeeId: isNaN(withEmployeeId) ? null : withEmployeeId
-        });
-      } else if (typeof id === 'string') {
-        // "client-3" or "status-1"
-        const [type, typeIdStr] = id.split('-');
-        const parsedId = parseInt(typeIdStr, 10);
-
-        if (!type || isNaN(parsedId)) {
-          console.warn("⚠️ Skipping invalid item:", id);
-          continue;
-        }
-
-        items.push({
-          id: parsedId,
-          type: type // 'client' or 'status'
-        });
+      let token = null;
+      if (supabase && supabase.auth && typeof supabase.auth.getSession === 'function') {
+        const { data: { session } } = await supabase.auth.getSession();
+        token = session?.access_token;
       }
-    } catch (err) {
-      console.error("❌ Error parsing status id:", id, err);
+
+      if (!token) throw new Error('No authentication token');
+
+      const response = await fetch(url, {
+        method: 'DELETE',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          employeeId: employeeId,
+          date: dateStr,
+          statusId: statusId
+        })
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.warn(`⚠️ Could not delete state from backend: ${errorText}`);
+      }
+    } catch (error) {
+      console.error("❌ Error deleting state from backend:", error);
     }
-  }
+  };
 
-  console.log("📤 Sending to API:", items);
+  // Add this function in SchedulePage.js (MUST BE BEFORE toggleStatus)
+  const clearCancellationReasonFromBackend = async (employeeId, dateStr, statusId) => {
+    try {
+      const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:5001';
+      const url = `${API_BASE_URL}/api/cancellation-reason`;
 
-  // Attach Supabase access token if available
-  let token = null;
-  try { const { data: { session } } = await supabase.auth.getSession(); token = session?.access_token; } catch(e){}
+      let token = null;
+      if (supabase && supabase.auth && typeof supabase.auth.getSession === 'function') {
+        const { data: { session } } = await supabase.auth.getSession();
+        token = session?.access_token;
+      }
 
-  const response = await fetch(`${API_BASE_URL}/api/schedule`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
-    body: JSON.stringify({ 
-      employeeId: parseInt(employeeId, 10), 
-      date: dateStr, 
-      items 
-    }),
-  });
+      if (!token) return;
 
-  if (!response.ok) {
-    const txt = await response.text();
-    console.error('Save failed response:', response.status, txt);
-    throw new Error('Save failed');
-  }
-  return await response.json();
-};
+      const response = await fetch(url, {
+        method: 'DELETE',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          employeeId: employeeId,
+          date: dateStr,
+          statusId: statusId
+        })
+      });
 
-  /*const getStatuses = useCallback((employeeId, dateStr) => {
-    const statuses = schedules[employeeId]?.[dateStr] || [];
-    console.log(`📋 Getting statuses for ${employeeId} on ${dateStr}:`, statuses);
-    return statuses;
-  }, [schedules]);*/
-
-  /*
+      if (response.ok) {
+        console.log("✅ Cleared cancellation reason for:", statusId);
+      }
+    } catch (error) {
+      console.error("❌ Error clearing cancellation reason:", error);
+    }
+  };
+  // In SchedulePage.js, replace the entire toggleStatus function with this:
   const toggleStatus = useCallback(async (employeeId, dateStr, statusId, selectedEmployee = null) => {
+    // Normalize statusId to string to avoid mismatches between number/string IDs
+    statusId = statusId != null ? String(statusId) : statusId;
     if (saving) return;
 
-    console.log("🔄 TOGGLE STATUS:", { employeeId, dateStr, statusId, selectedEmployee });
-
-    const employeeSchedules = schedules[employeeId] || {};
-    const dayStatuses = employeeSchedules[dateStr] || [];
-
-    let newStatuses;
-
-    if (selectedEmployee) {
-      // For "With ..." status, we need to handle it specially
-      const withStatus = statusConfigs.find(s => s.name === "With ...");
-      if (withStatus) {
-        // Remove any existing "With ..." status and add the new one with employee data
-        newStatuses = [
-          ...dayStatuses.filter(id => id !== withStatus.id),
-          `with_${selectedEmployee.id}` // Store as "with_employeeId" to track the relationship
-        ];
-        console.log("👥 WITH EMPLOYEE STATUS:", newStatuses);
-      }
-    } else {
-      // Normal status toggle
-      newStatuses = dayStatuses.includes(statusId)
-        ? dayStatuses.filter((id) => id !== statusId)
-        : [...dayStatuses, statusId];
-    }
-
-    console.log("📝 NEW STATUSES:", newStatuses);
-
-    setSchedules((prev) => {
-      const newSchedules = {
-        ...prev,
-        [employeeId]: {
-          ...prev[employeeId],
-          [dateStr]: newStatuses
-        },
-      };
-      console.log("📊 UPDATED SCHEDULES for employee:", employeeId, newSchedules[employeeId]);
-      return newSchedules;
+    console.log("🔄 TOGGLE STATUS - START:", {
+      employeeId,
+      dateStr,
+      statusId,
+      selectedEmployee,
+      currentSchedules: schedules[employeeId]?.[dateStr]
     });
 
-    setLastUpdateTime(Date.now());
-
-    try {
-      setSaving(true);
-      await saveScheduleToDB(employeeId, dateStr, newStatuses);
-      console.log("✅ STATUS TOGGLE COMPLETED SUCCESSFULLY");
-    } catch (error) {
-      console.error("❌ FAILED to save schedule:", error);
-      setSchedules((prev) => ({
-        ...prev,
-        [employeeId]: {
-          ...prev[employeeId],
-          [dateStr]: dayStatuses
-        },
-      }));
-      console.log("🔄 REVERTED changes for date:", dateStr);
-    } finally {
-      setSaving(false);
-    }
-  }, [schedules, saving, saveScheduleToDB, statusConfigs]);*/
-  const toggleStatus = useCallback(async (employeeId, dateStr, statusId, selectedEmployee = null) => {
-    if (saving) return;
-
-    console.log("🔄 TOGGLE STATUS:", { employeeId, dateStr, statusId, selectedEmployee });
-
     const employeeSchedules = schedules[employeeId] || {};
-    const dayStatuses = employeeSchedules[dateStr] || [];
+    // Normalize all day statuses to strings to avoid type mismatches
+    const dayStatuses = employeeSchedules[dateStr]
+      ? employeeSchedules[dateStr].map(s => String(s))
+      : [];
 
     let newStatuses;
-    let withEmployeeId = null;
+    let oldStatusId = null;
+    let isChangingClientType = false;
 
     if (selectedEmployee) {
-      // For "With ..." status - FIND WHERE TO INSERT IT
+      // For "With ..." status
       const withStatus = statusConfigs.find(s => s.name === "With ...");
       if (withStatus) {
-        // Check if "With ..." was already in the list (maybe as "with_123_456" format)
-        let insertIndex = dayStatuses.length; // Default: add at end
-
-        // Try to find where "With ..." status should go
+        let insertIndex = dayStatuses.length;
         for (let i = 0; i < dayStatuses.length; i++) {
           const currentId = dayStatuses[i];
-          if (currentId === withStatus.id ||
-            (typeof currentId === 'string' && currentId.startsWith('with_'))) {
-            insertIndex = i; // Found where "With ..." was/is
+          if (currentId === withStatus.id || (typeof currentId === 'string' && currentId.startsWith('with_'))) {
+            insertIndex = i;
             break;
           }
         }
 
-        // Remove any existing "With ..." statuses
         const filteredStatuses = dayStatuses.filter(status =>
           status !== withStatus.id && !status.startsWith('with_')
         );
 
-        // Insert at the correct position
         filteredStatuses.splice(insertIndex, 0, `with_${selectedEmployee.id}_${withStatus.id}`);
         newStatuses = filteredStatuses;
-        withEmployeeId = selectedEmployee.id;
-        console.log("👥 WITH EMPLOYEE:", selectedEmployee.name);
       }
     } else {
-      // Normal status toggle - check if it's "With ..." being removed
-      const withStatus = statusConfigs.find(s => s.name === "With ...");
-      if (statusId === withStatus?.id) {
-        // User is clicking "With ..." to remove it
-        newStatuses = dayStatuses.filter((id) =>
-          id !== statusId && !id.startsWith('with_')
-        );
-      } else {
-        // Normal status toggle - PRESERVE ORDER
+      // Check if it's a typed client (client-1_type-2)
+      if (typeof statusId === 'string' && statusId.includes('_type-')) {
+        const [clientPart] = statusId.split('_type-');
+        const baseClientId = clientPart; // already in format 'client-{id}'
+
+        console.log('🔍 TYPED STATUS TOGGLE DEBUG:', {
+          statusId,
+          baseClientId,
+          dayStatuses,
+          isAlreadyInList: dayStatuses.includes(statusId)
+        });
+
+        // Check if this specific typed status already exists
         if (dayStatuses.includes(statusId)) {
-          // Remove status while keeping order
-          newStatuses = [];
-          for (const status of dayStatuses) {
-            if (status !== statusId) {
-              newStatuses.push(status);
-            }
+          // Remove ONLY this specific typed status
+          console.log('❌ REMOVING typed status:', statusId);
+          newStatuses = dayStatuses.filter(id => String(id) !== String(statusId));
+
+          // Check if ANY other typed statuses for the same client still exist
+          const otherTypesExist = newStatuses.some(id =>
+            typeof id === 'string' && id.startsWith(baseClientId)
+          );
+
+          console.log('🔍 Other types exist after removal?', otherTypesExist);
+
+          if (!otherTypesExist) {
+            console.log('🗑️ No other types exist - removing state for:', baseClientId);
+            // Remove state if no other types remain
+            setStatusStates(prev => {
+              const newStates = { ...prev };
+              const key = `${employeeId}_${dateStr}`;
+              if (newStates[key] && newStates[key][baseClientId]) {
+                console.log("🗑️ Removing state from toggleStatus:", baseClientId);
+                delete newStates[key][baseClientId];
+                if (Object.keys(newStates[key]).length === 0) {
+                  delete newStates[key];
+                }
+              }
+              return newStates;
+            });
+
+            // Also delete from backend
+            await deleteStateFromBackend(employeeId, dateStr, baseClientId);
+          } else {
+            console.log('✅ Other types still exist - keeping state for:', baseClientId);
           }
         } else {
-          // Add status at the end - preserve existing order
+          // Add this typed status
+          console.log('✅ ADDING typed status:', statusId);
+          newStatuses = [...dayStatuses, String(statusId)];
+        }
+
+        console.log('📝 New statuses after toggle:', newStatuses);
+
+      } else if (typeof statusId === 'string' && statusId.startsWith('client-')) {
+        // Client without type
+        const baseClientId = statusId;
+
+        // Find any existing status for this same client (with or without type)
+        oldStatusId = dayStatuses.find(existingId => {
+          if (typeof existingId === 'string') {
+            // Match client-1 or client-1_type-2
+            return existingId.startsWith(baseClientId);
+          }
+          return false;
+        });
+
+        console.log("🔍 Changing to client without type:", { baseClientId, oldStatusId });
+
+        if (oldStatusId) {
+          isChangingClientType = true;
+          // Remove old status (could be with or without type)
+          newStatuses = dayStatuses.filter(id => !id.startsWith(baseClientId));
+          // Add new status
+          newStatuses = [...newStatuses, statusId];
+        } else {
+          // Adding new client
+          if (dayStatuses.includes(statusId)) {
+            // Removing client - clear its state
+            newStatuses = dayStatuses.filter(id => id !== statusId);
+
+            // Get base client ID to clear state
+            const baseClientId = statusId;
+            console.log("❌ Client being toggled OFF - clearing state for:", baseClientId);
+            setStatusStates(prev => {
+              const newStates = { ...prev };
+              const key = `${employeeId}_${dateStr}`;
+              if (newStates[key] && newStates[key][baseClientId]) {
+                console.log("🗑️ Cleared state for removed client:", baseClientId);
+                delete newStates[key][baseClientId];
+                if (Object.keys(newStates[key]).length === 0) {
+                  delete newStates[key];
+                }
+              }
+              return newStates;
+            });
+
+            // Also delete from backend
+            await deleteStateFromBackend(employeeId, dateStr, baseClientId);
+          } else {
+            newStatuses = [...dayStatuses, statusId];
+          }
+        }
+      } else {
+        // Normal status toggle
+        if (dayStatuses.includes(statusId)) {
+          newStatuses = dayStatuses.filter(id => id !== statusId);
+          // Remove all states for this base client/status
+          const getBaseStatusId = (id) => (typeof id === 'string' && id.startsWith('client-')) ? id.split('_type-')[0] : id;
+          const baseId = getBaseStatusId(statusId);
+
+          console.log("❌ Removing normal status - clearing state for:", baseId);
+
+          setStatusStates(prev => {
+            const newStates = { ...prev };
+            const key = `${employeeId}_${dateStr}`;
+            if (newStates[key]) {
+              Object.keys(newStates[key]).forEach((sid) => {
+                if (getBaseStatusId(sid) === baseId) {
+                  console.log("🗑️ Removing state for:", sid);
+                  delete newStates[key][sid];
+                }
+              });
+              if (Object.keys(newStates[key]).length === 0) {
+                delete newStates[key];
+              }
+            }
+            return newStates;
+          });
+
+          // Also delete from backend
+          await deleteStateFromBackend(employeeId, dateStr, baseId);
+        } else {
           newStatuses = [...dayStatuses, statusId];
         }
       }
     }
 
-    console.log("📝 NEW STATUSES (preserved order):", newStatuses);
+    console.log("📝 Final new statuses:", newStatuses);
 
-    setSchedules((prev) => ({
+    // THEN update schedules
+    setSchedules(prev => ({
       ...prev,
       [employeeId]: {
         ...prev[employeeId],
@@ -697,10 +1041,11 @@ const saveScheduleToDB = async (employeeId, dateStr, statusIds) => {
 
     try {
       setSaving(true);
-      await saveScheduleToDB(employeeId, dateStr, newStatuses, withEmployeeId);
-      console.log("✅ STATUS TOGGLE COMPLETED SUCCESSFULLY");
+      await saveScheduleToDB(employeeId, dateStr, newStatuses);
+      console.log("✅ STATUS TOGGLE SAVED TO DB");
     } catch (error) {
       console.error("❌ FAILED to save schedule:", error);
+      // Revert on error
       setSchedules((prev) => ({
         ...prev,
         [employeeId]: {
@@ -711,55 +1056,161 @@ const saveScheduleToDB = async (employeeId, dateStr, statusIds) => {
     } finally {
       setSaving(false);
     }
-  }, [schedules, saving, saveScheduleToDB, statusConfigs]);
+  }, [schedules, saving, saveScheduleToDB, statusConfigs, statusStates, clearCancellationReasonFromBackend, deleteStateFromBackend]);
+  // In SchedulePage.js, update the removeStatus function:
+  // In SchedulePage.js, replace the entire removeStatus function with this:
+  const removeStatus = useCallback(async (employeeId, dateStr, statusId, scheduleUpdate = null) => {
+    // Normalize statusId to string
+    statusId = statusId != null ? String(statusId) : statusId;
+    if (saving) return;
 
-  const removeStatus = useCallback(async (employeeId, dateStr, statusId) => {
-  if (saving) return;
+    console.log("🗑️ REMOVE STATUS - START:", { employeeId, dateStr, statusId });
 
-  console.log("🗑️ REMOVE STATUS:", { employeeId, dateStr, statusId });
+    const employeeSchedules = schedules[employeeId] || {};
+    const dayStatuses = employeeSchedules[dateStr] || [];
 
-  const employeeSchedules = schedules[employeeId] || {};
-  const dayStatuses = employeeSchedules[dateStr] || [];
+    // Get the base client ID if this is a typed client
+    let baseClientId = null;
+    let isTypedClient = false;
 
-  // Remove while preserving order
-  const updatedStatuses = [];
-  for (const status of dayStatuses) {
-    if (status !== statusId) {
-      updatedStatuses.push(status);
+    if (typeof statusId === 'string' && statusId.startsWith('client-')) {
+      if (statusId.includes('_type-')) {
+        baseClientId = statusId.split('_type-')[0];
+        isTypedClient = true;
+      } else {
+        baseClientId = statusId;
+      }
     }
-  }
 
-  console.log("📝 UPDATED STATUSES after remove:", updatedStatuses);
+    console.log("🔍 Client info:", { baseClientId, isTypedClient, dayStatuses });
 
-  setSchedules((prev) => ({
-    ...prev,
-    [employeeId]: {
-      ...prev[employeeId],
-      [dateStr]: updatedStatuses
-    },
-  }));
+    // Store current state BEFORE any changes
+    const currentState = baseClientId
+      ? statusStates[`${employeeId}_${dateStr}`]?.[baseClientId]
+      : statusStates[`${employeeId}_${dateStr}`]?.[statusId];
 
-  setLastUpdateTime(Date.now());
+    // Step 1: Remove ALL entries for this client (including all types if it's a client)
+    const updatedStatuses = dayStatuses.filter(entry => {
+      // If we're removing a client (any type), remove ALL entries for that client
+      if (baseClientId && typeof entry === 'string' && entry.startsWith(baseClientId)) {
+        console.log("❌ Filtering out client entry:", entry);
+        return false; // Remove this entry
+      }
+      // For non-client entries or exact match
+      return entry !== statusId;
+    });
 
-  try {
-    setSaving(true);
-    // Make sure to pass the correct IDs to saveScheduleToDB
-    await saveScheduleToDB(employeeId, dateStr, updatedStatuses);
-    console.log("✅ STATUS REMOVAL COMPLETED SUCCESSFULLY");
-  } catch (error) {
-    console.error("❌ FAILED to save schedule:", error);
-    // Revert on error
+    console.log("📝 Original statuses:", dayStatuses);
+    console.log("📝 Updated statuses:", updatedStatuses);
+
+    // Step 2: Check if ANY other entries for this client remain AFTER removal
+    let shouldRemoveState = true;
+    let stateKeyToRemove = baseClientId || statusId;
+
+    if (baseClientId) {
+      // Check if ANY entries for this client still exist in the UPDATED list
+      const otherEntriesExist = updatedStatuses.some(entry => {
+        if (typeof entry === 'string') {
+          return entry.startsWith(baseClientId);
+        }
+        return false;
+      });
+
+      console.log("🔍 Checking if other entries exist for client:", baseClientId);
+      console.log("🔍 Other entries exist after removal?", otherEntriesExist);
+
+      if (otherEntriesExist) {
+        console.log("✅ Other entries still exist - KEEPING state for:", baseClientId);
+        shouldRemoveState = false;
+      } else {
+        console.log("🗑️ No entries remain - removing state for:", baseClientId);
+        shouldRemoveState = true;
+      }
+    }
+
+    console.log("🔍 Should remove state?", shouldRemoveState, "Key:", stateKeyToRemove);
+
+    // Step 3: Update schedules state
     setSchedules((prev) => ({
       ...prev,
       [employeeId]: {
         ...prev[employeeId],
-        [dateStr]: dayStatuses
+        [dateStr]: updatedStatuses
       },
     }));
-  } finally {
-    setSaving(false);
-  }
-}, [schedules, saving, saveScheduleToDB]);
+
+    // Step 4: Update statusStates if needed
+    if (shouldRemoveState) {
+      console.log("🗑️ Removing state for key:", stateKeyToRemove);
+
+      setStatusStates(prev => {
+        const newStates = { ...prev };
+        const key = `${employeeId}_${dateStr}`;
+
+        console.log("🗑️ Looking for state at key:", key, "for:", stateKeyToRemove);
+
+        if (newStates[key] && newStates[key][stateKeyToRemove]) {
+          console.log("🗑️ Found and removing state for:", stateKeyToRemove);
+          delete newStates[key][stateKeyToRemove];
+
+          // Clean up empty key
+          if (Object.keys(newStates[key]).length === 0) {
+            console.log("🗑️ Cleaning up empty key:", key);
+            delete newStates[key];
+          }
+        } else {
+          console.log("⚠️ No state found to delete for:", stateKeyToRemove);
+        }
+
+        console.log("🗑️ New states after removal:", newStates);
+        return newStates;
+      });
+
+      // Also delete from backend
+      if (stateKeyToRemove) {
+        await deleteStateFromBackend(employeeId, dateStr, stateKeyToRemove);
+      }
+    } else {
+      console.log("✅ State preserved - other entries still exist");
+    }
+
+    setLastUpdateTime(Date.now());
+
+    // Step 5: Save to database
+    try {
+      setSaving(true);
+      const result = await saveScheduleToDB(employeeId, dateStr, updatedStatuses);
+      console.log("✅ STATUS REMOVAL COMPLETED SUCCESSFULLY", result);
+    } catch (error) {
+      console.error("❌ FAILED to save schedule:", error);
+
+      // Revert on error
+      setSchedules((prev) => ({
+        ...prev,
+        [employeeId]: {
+          ...prev[employeeId],
+          [dateStr]: dayStatuses
+        },
+      }));
+
+      // Also restore state if we had one
+      if (currentState && shouldRemoveState) {
+        setStatusStates(prev => {
+          const newStates = { ...prev };
+          const key = `${employeeId}_${dateStr}`;
+
+          if (!newStates[key]) {
+            newStates[key] = {};
+          }
+
+          newStates[key][stateKeyToRemove] = currentState;
+          return newStates;
+        });
+      }
+    } finally {
+      setSaving(false);
+    }
+  }, [schedules, saving, saveScheduleToDB, statusStates, deleteStateFromBackend]);
 
   const handleCellClick = useCallback((employeeId, dateStr) => {
     if (saving) return;
@@ -780,26 +1231,22 @@ const saveScheduleToDB = async (employeeId, dateStr, statusIds) => {
 
   // Save email settings
   const saveEmailSettings = async (settings) => {
-    try {
-      const response = await fetch(`${API_BASE_URL}/api/email-settings`, {
-        method: 'POST',
-        credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(settings)
-      });
+    const response = await fetch(`${API_BASE_URL}/api/email-settings`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(settings)
+    });
 
-      const result = await response.json();
-      if (result.success) {
-        alert('Email settings saved!');
-        setEmailSettings(settings);
-        setShowEmailModal(false);
-      } else {
-        alert('Error: ' + result.error);
-      }
-    } catch (error) {
-      console.error('Failed to save email settings:', error);
-      alert('Failed to save email settings');
+    if (!response.ok) {
+      throw new Error('Failed to save to database');
     }
+
+    // Refresh the settings after saving
+    const updatedResponse = await fetch(`${API_BASE_URL}/api/email-settings`);
+    const updatedData = await updatedResponse.json();
+    setEmailSettings(updatedData);
+
+    return response.json();
   };
 
   // Send email immediately
@@ -828,17 +1275,43 @@ const saveScheduleToDB = async (employeeId, dateStr, statusIds) => {
   };
 
   const refreshAllData = useCallback(async () => {
+    if (manualRefreshing || loading) return;
+
     try {
-      setManualRefreshing(true);
       console.log("🔄 REFRESHING all data...");
-      await Promise.all([refetchEmployees(), refetchStatuses(), refetchSchedules()]);
-      console.log("✅ ALL DATA REFRESHED");
+      setManualRefreshing(true);
+
+      // Refresh ALL data including schedule states
+      await Promise.all([
+        refetchEmployees(),
+        refetchStatuses(),
+        refetchSchedules(),
+        refetchScheduleStates(),
+        refetchScheduleTypes(),
+        refetchClients()
+      ]);
+
+      // Force reload of schedule states by updating lastUpdateTime
+      setLastUpdateTime(Date.now());
+
+      console.log("✅ ALL DATA REFRESHED including states");
     } catch (error) {
       console.error("❌ FAILED to refresh data:", error);
     } finally {
-      setManualRefreshing(false);
+      setTimeout(() => {
+        setManualRefreshing(false);
+      }, 500); // Small delay to show skeleton
     }
-  }, [refetchEmployees, refetchStatuses, refetchSchedules]);
+  }, [
+    refetchEmployees,
+    refetchStatuses,
+    refetchSchedules,
+    refetchScheduleStates,
+    refetchScheduleTypes,
+    refetchClients,
+    manualRefreshing,
+    loading
+  ]);
 
   const handleExport = useCallback(() => {
     console.log('DEBUG - All employees:', employees.map(e => ({ id: e.id, name: e.name, idType: typeof e.id })));
@@ -895,7 +1368,33 @@ const saveScheduleToDB = async (employeeId, dateStr, statusIds) => {
         return `With ${withEmployee?.name || 'Unknown (ID: ' + employeeIdStr + ')'}`;
       }
 
-      // Normal status
+      // Handle client with type: "client-1_type-2"
+      if (typeof statusId === 'string' && statusId.includes('_type-')) {
+        const [clientPart, typePart] = statusId.split('_type-');
+        const clientId = clientPart.replace('client-', '');
+        const typeId = typePart;
+
+        const client = statusConfigs.find(s => s.id === `client-${clientId}`);
+        const type = scheduleTypes.find(t => t.id.toString() === typeId);
+
+        return `${client?.name || 'Client'} (${type?.type_name || 'Type'})`;
+      }
+
+      // Handle client without type: "client-1"
+      if (typeof statusId === 'string' && statusId.startsWith('client-')) {
+        const clientId = statusId.replace('client-', '');
+        const client = statusConfigs.find(s => s.id === `client-${clientId}`);
+        return client?.name || 'Client';
+      }
+
+      // Handle normal status: "status-1"
+      if (typeof statusId === 'string' && statusId.startsWith('status-')) {
+        const id = statusId.replace('status-', '');
+        const status = statusConfigs.find(s => s.id === `status-${id}`);
+        return status?.name || '';
+      }
+
+      // Normal status (backward compatibility)
       const status = statusConfigs.find(s => s.id === statusId);
       return status ? status.name : "";
     };
@@ -928,7 +1427,7 @@ const saveScheduleToDB = async (employeeId, dateStr, statusIds) => {
         });
 
         if (hasData) {
-          csvContent += `"ELECTRA ENGINEERING DAILY SCHEDULE (${displayDate})",,\n`;
+          csvContent += `\n"${displayDate}",,\n`;
           csvContent += `"Name","Extension","Status"\n`;
 
           employees.forEach(employee => {
@@ -938,24 +1437,11 @@ const saveScheduleToDB = async (employeeId, dateStr, statusIds) => {
               csvContent += `"${employee.name}","${employee.ext}","${statusNames}"\n`;
             }
           });
-          csvContent += "\n";
         }
       });
     }
 
-    let filename;
-    if (exportRange === "day" && selectedDate) {
-      filename = `schedule-${format(selectedDate, "yyyy-MM-dd")}.csv`;
-    } else if (exportRange === "week" && selectedDate) {
-      const weekStart = startOfWeek(selectedDate, { weekStartsOn: 1 });
-      filename = `schedule-week-${format(weekStart, "yyyy-MM-dd")}.csv`;
-    } else if (exportRange === "month" && selectedDate) {
-      filename = `schedule-${format(selectedDate, "yyyy-MM")}.csv`;
-    } else {
-      filename = `schedule-${format(new Date(), "yyyy-MM-dd")}.csv`;
-    }
-
-    const blob = new Blob(["\uFEFF" + csvContent], { type: "text/csv;charset=utf-8;" });
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
@@ -1065,9 +1551,16 @@ const saveScheduleToDB = async (employeeId, dateStr, statusIds) => {
             <li>Click "Try Again"</li>
           </ul>
 
-          <button onClick={refreshAllData} className="retry-button">
-            <RefreshCw size={16} />
-            Try Again
+          <button
+            onClick={() => {
+              console.log("🔄 Manual refresh triggered");
+              setLastUpdateTime(Date.now());
+            }}
+            className="refresh-states-btn"
+            disabled={saving || manualRefreshing}
+          >
+            <RefreshCw size={16} className={manualRefreshing ? "spin" : ""} />
+            {manualRefreshing ? "Refreshing..." : "Refresh States"}
           </button>
         </div>
       </div>
@@ -1186,6 +1679,7 @@ const saveScheduleToDB = async (employeeId, dateStr, statusIds) => {
               dateRange={dateRange}
               schedules={schedules}
               statusConfigs={statusConfigs}
+              scheduleTypes={scheduleTypes}
               activeDropdown={activeDropdown}
               saving={saving}
               onCellClick={handleCellClick}
@@ -1193,6 +1687,11 @@ const saveScheduleToDB = async (employeeId, dateStr, statusIds) => {
               setActiveDropdown={setActiveDropdown}
               toggleStatus={toggleStatus}
               employeesData={employeesData}
+              statusStates={statusStates}
+              onStatusStateChange={handleStatusStateChange}
+              availableStates={availableStates}
+              onScheduleUpdate={handleScheduleUpdate} // ← Add this
+              refreshSchedules={refetchSchedules} // ← Add this
             />
           )}
         </div>

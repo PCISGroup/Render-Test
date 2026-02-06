@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useCallback, useEffect } from 'react';
-import { BarChart3, ChevronDown, RefreshCw, AlertCircle } from 'lucide-react';
+import { BarChart3, ChevronDown, RefreshCw, AlertCircle, Check, X, Clock } from 'lucide-react';
 import './Analytics.css';
 import SearchableFilter from "../components/SearchableFilters";
 import { supabase } from '../lib/supabaseClient';
@@ -102,8 +102,39 @@ const getLastMonthDateRange = () => {
   return { start, end };
 };
 
+// Helper function to normalize status ID for comparison
+const normalizeStatusId = (statusId) => {
+  if (!statusId) return null;
+  
+  const idStr = String(statusId);
+  
+  // If it's already a status identifier from backend (like "status-5", "client-1_type-2", etc.)
+  if (idStr.includes('status-') || idStr.includes('client-') || idStr.includes('with_')) {
+    return idStr;
+  }
+  
+  // If it's a plain number, assume it's a status ID
+  if (/^\d+$/.test(idStr)) {
+    return `status-${idStr}`;
+  }
+  
+  return idStr;
+};
+
+// Helper to extract base client ID
+const extractBaseClientId = (statusId) => {
+  if (!statusId) return null;
+  
+  if (typeof statusId === 'string' && statusId.startsWith('client-')) {
+    // Remove any type suffix
+    return statusId.split('_type-')[0];
+  }
+  
+  return statusId;
+};
+
 export default function Analytics() {
-  // Custom hooks for data fetching with endpoint paths only
+  // Custom hooks for data fetching
   const {
     data: employeesData,
     loading: employeesLoading,
@@ -132,14 +163,28 @@ export default function Analytics() {
     refetch: refetchSchedules
   } = useFetchWithRetry("/api/schedule");
 
-  // Normalize API responses that may be wrapped as { success, data }
+  const {
+    data: scheduleTypesData,
+    loading: scheduleTypesLoading,
+    error: scheduleTypesError,
+    refetch: refetchScheduleTypes
+  } = useFetchWithRetry("/api/schedule-types");
+
+  // State for schedule states
+  const [scheduleStates, setScheduleStates] = useState([]);
+  const [statesLoading, setStatesLoading] = useState(false);
+  const [statesError, setStatesError] = useState(null);
+
+  // Normalize API responses
   const statusesArray = Array.isArray(statusesData) ? statusesData : (statusesData?.data || []);
   const employeesArray = Array.isArray(employeesData) ? employeesData : (employeesData?.data || []);
   const clientsArray = Array.isArray(clientsData) ? clientsData : (clientsData?.data || []);
+  const scheduleTypesArray = Array.isArray(scheduleTypesData) ? scheduleTypesData : (scheduleTypesData?.data || []);
 
   const [filters, setFilters] = useState({
     employee: '',
     status: '',
+    statusType: '',
     dateType: '',
     customDate: '',
     fromDate: '',
@@ -151,12 +196,224 @@ export default function Analytics() {
   const [manualRefreshing, setManualRefreshing] = useState(false);
 
   // Combine loading states
-  const isLoading = employeesLoading || statusesLoading || scheduleLoading;
-  const error = employeesError || statusesError || scheduleError;
+  const isLoading = employeesLoading || statusesLoading || scheduleLoading || 
+                   scheduleTypesLoading || statesLoading;
+  const error = employeesError || statusesError || scheduleError || 
+                scheduleTypesError || statesError;
+
+  // Function to fetch schedule states for ALL employees
+  const fetchScheduleStates = useCallback(async () => {
+    if (!employeesArray.length) return;
+    
+    try {
+      setStatesLoading(true);
+      setStatesError(null);
+      
+      const { data: { session } } = await supabase.auth.getSession();
+      const token = session?.access_token;
+      
+      if (!token) {
+        throw new Error('No auth session');
+      }
+      
+      // Get date range for last 90 days (to catch most states)
+      const endDate = new Date();
+      const startDate = new Date();
+      startDate.setDate(startDate.getDate() - 90);
+      
+      const startDateStr = startDate.toISOString().split('T')[0];
+      const endDateStr = endDate.toISOString().split('T')[0];
+      
+      const allStates = [];
+      
+      // Fetch states for each employee individually (since bulk endpoint might not work)
+      for (const employee of employeesArray) {
+        try {
+          const response = await fetch(
+            `${API_BASE_URL}/api/schedule-states?` +
+            `employeeId=${employee.id}&` +
+            `startDate=${startDateStr}&` +
+            `endDate=${endDateStr}`,
+            {
+              headers: {
+                'Authorization': `Bearer ${token}`,
+                'Content-Type': 'application/json'
+              }
+            }
+          );
+          
+          if (response.ok) {
+            const result = await response.json();
+            if (result.success && result.scheduleStates) {
+              // Add employee ID to each state
+              const statesWithEmployeeId = result.scheduleStates.map(state => ({
+                ...state,
+                employee_id: employee.id
+              }));
+              allStates.push(...statesWithEmployeeId);
+            }
+          }
+        } catch (err) {
+          console.error(`Error fetching states for employee ${employee.id}:`, err);
+        }
+      }
+      
+      console.log('✅ Fetched schedule states:', allStates);
+      setScheduleStates(allStates);
+      
+    } catch (err) {
+      console.error('❌ Error fetching schedule states:', err);
+      setStatesError(err.message);
+    } finally {
+      setStatesLoading(false);
+    }
+  }, [employeesArray.length]);
+
+  // Fetch schedule states when component loads
+  useEffect(() => {
+    if (employeesArray.length > 0) {
+      fetchScheduleStates();
+    }
+  }, [employeesArray.length, fetchScheduleStates]);
+
+  // Function to get state for a specific entry
+  const getEntryState = useCallback((employeeId, date, statusId) => {
+    if (!scheduleStates.length) return null;
+    
+    console.log('🔍 Looking for state:', { employeeId, date, statusId });
+    
+    // Normalize the input statusId
+    const normalizedStatusId = normalizeStatusId(statusId);
+    console.log('🔍 Normalized statusId:', normalizedStatusId);
+    
+    // Try to find exact match first
+    let state = scheduleStates.find(s => {
+      const stateEmployeeId = String(s.employee_id || s.employeeId);
+      const targetEmployeeId = String(employeeId);
+      
+      return stateEmployeeId === targetEmployeeId && 
+             s.date === date && 
+             s.status_id === normalizedStatusId;
+    });
+    
+    // If no exact match, try to match by base client ID for client entries
+    if (!state && normalizedStatusId && normalizedStatusId.startsWith('client-')) {
+      const baseClientId = extractBaseClientId(normalizedStatusId);
+      console.log('🔍 Trying base client ID match:', baseClientId);
+      
+      state = scheduleStates.find(s => {
+        const stateEmployeeId = String(s.employee_id || s.employeeId);
+        const targetEmployeeId = String(employeeId);
+        
+        if (stateEmployeeId !== targetEmployeeId || s.date !== date) {
+          return false;
+        }
+        
+        // Check if state status_id contains the base client ID
+        const stateStatusId = s.status_id;
+        if (!stateStatusId) return false;
+        
+        // For client states, the backend returns something like "client-1" or "client-1_type-2"
+        // We need to check if our normalizedStatusId matches or contains the same base client
+        const stateBaseClientId = extractBaseClientId(stateStatusId);
+        
+        return stateBaseClientId === baseClientId;
+      });
+    }
+    
+    // If still no match, try fuzzy matching for "with" statuses
+    if (!state && normalizedStatusId && normalizedStatusId.includes('with_')) {
+      state = scheduleStates.find(s => {
+        const stateEmployeeId = String(s.employee_id || s.employeeId);
+        const targetEmployeeId = String(employeeId);
+        
+        if (stateEmployeeId !== targetEmployeeId || s.date !== date) {
+          return false;
+        }
+        
+        // Check if this is a "with" state
+        const stateStatusId = s.status_id;
+        if (!stateStatusId) return false;
+        
+        return stateStatusId.includes('with_');
+      });
+    }
+    
+    console.log('🔍 Found state:', state);
+    return state || null;
+  }, [scheduleStates]);
+
+// Function to render state icon - UPDATED with TBA class
+const renderStateIcon = (state) => {
+  if (!state || !state.state_name) return null;
+  
+  const stateName = state.state_name.toLowerCase();
+  
+  switch (stateName) {
+    case 'completed':
+      return (
+        <span className="state-icon completed">
+          <Check size={14} />
+        </span>
+      );
+    case 'cancelled':
+      return (
+        <span className="state-icon cancelled">
+          <X size={14} />
+        </span>
+      );
+    case 'postponed':
+      // Check if this is TBA (no postponed_date)
+      const isTBA = !state.postponed_date || state.postponed_date.trim() === '';
+      
+      // Create tooltip text for postponed
+      let tooltipText = 'Postponed';
+      
+      if (!isTBA) {
+        try {
+          const date = new Date(state.postponed_date);
+          if (!isNaN(date.getTime())) {
+            const formattedDate = date.toLocaleDateString('en-US', {
+              month: 'short',
+              day: 'numeric',
+              year: 'numeric'
+            });
+            tooltipText = `Postponed from ${formattedDate}`;
+          }
+        } catch (e) {
+          console.warn('Could not format postponed date:', state.postponed_date);
+        }
+      } else {
+        tooltipText = 'Will be postponed (TBA)';
+      }
+      
+      return (
+        <span className={`state-icon postponed ${isTBA ? 'tba' : ''}`} title={tooltipText}>
+          <Clock size={14} />
+        </span>
+      );
+    default:
+      return null;
+  }
+};
+
+  const formatDisplayDate = (dateString) => {
+    if (!dateString) return '';
+    try {
+      const date = new Date(dateString + 'T00:00:00');
+      return date.toLocaleDateString('en-US', {
+        month: 'short',
+        day: 'numeric',
+        year: 'numeric'
+      });
+    } catch (e) {
+      return dateString;
+    }
+  };
 
   const handleFilterChange = useCallback((type, value) => {
     setFilters((prev) => {
-      if (type === 'employee' || type === 'status') {
+      if (type === 'employee' || type === 'status' || type === 'statusType') {
         return { ...prev, [type]: value };
       }
 
@@ -183,116 +440,195 @@ export default function Analytics() {
   }, []);
 
   const clearFilters = useCallback(() => {
-    setFilters({ employee: '', status: '', dateType: '', customDate: '', fromDate: '', toDate: '', specificMonth: '' });
+    setFilters({ 
+      employee: '', 
+      status: '', 
+      statusType: '',
+      dateType: '', 
+      customDate: '', 
+      fromDate: '', 
+      toDate: '', 
+      specificMonth: '' 
+    });
     setCurrentPage(1);
   }, []);
 
-  // Enhanced refresh function 
   const handleRefresh = useCallback(async () => {
     try {
       setManualRefreshing(true);
-      await Promise.all([refetchEmployees(), refetchStatuses(), refetchSchedules()]);
+      await Promise.all([
+        refetchEmployees(), 
+        refetchStatuses(), 
+        refetchSchedules(),
+        refetchScheduleTypes(),
+        fetchScheduleStates()
+      ]);
     } catch (error) {
       console.error("❌ Failed to refresh analytics:", error);
     } finally {
       setManualRefreshing(false);
     }
-  }, [refetchEmployees, refetchStatuses, refetchSchedules]);
+  }, [refetchEmployees, refetchStatuses, refetchSchedules, refetchScheduleTypes, fetchScheduleStates]);
 
   const detailedData = useMemo(() => {
-    if ((!employeesData && !employeesArray.length) || !scheduleData) return [];
+  if ((!employeesData && !employeesArray.length) || !scheduleData) return [];
 
-    const statusMap = new Map();
-    // Handle both string and number IDs by converting all to strings
-    statusesArray.forEach((s) => {
-      statusMap.set(s.id.toString(), s.label || s.name);
-      if (!isNaN(s.id)) {
-        statusMap.set(Number(s.id).toString(), s.label || s.name);
-      }
-    });
+  const statusMap = new Map();
+  statusesArray.forEach((s) => {
+    statusMap.set(s.id.toString(), s.label || s.name);
+  });
 
-    // Build client map for client-<id> lookups
-    const clientMap = new Map();
-    clientsArray.forEach(c => clientMap.set(String(c.id), c.name));
+  const clientMap = new Map();
+  clientsArray.forEach(c => clientMap.set(String(c.id), c.name));
 
-    // Create employee map for "with_" status lookup
-    const employeeMap = new Map();
-    employeesArray.forEach((emp) => {
-      employeeMap.set(emp.id.toString(), emp.name);
-    });
+  const typeMap = new Map();
+  scheduleTypesArray.forEach(type => typeMap.set(String(type.id), type.type_name));
 
-    // DEBUG: Log the employee map
-    console.log('DEBUG - Employee Map:', Array.from(employeeMap.entries()));
+  const employeeMap = new Map();
+  employeesArray.forEach((emp) => {
+    employeeMap.set(emp.id.toString(), emp.name);
+  });
 
-    const rows = [];
+  const rows = [];
 
-    for (let i = 0; i < employeesArray.length; i++) {
-      const emp = employeesArray[i];
-      const empSchedules = scheduleData[emp.id] || {};
+  for (let i = 0; i < employeesArray.length; i++) {
+    const emp = employeesArray[i];
+    const empSchedules = scheduleData[emp.id] || {};
 
-      for (const date in empSchedules) {
-        if (!empSchedules.hasOwnProperty(date)) continue;
+    for (const date in empSchedules) {
+      if (!empSchedules.hasOwnProperty(date)) continue;
 
-        const statusIds = empSchedules[date];
-        const arr = Array.isArray(statusIds) ? statusIds : [statusIds];
+      const statusIds = empSchedules[date];
+      const arr = Array.isArray(statusIds) ? statusIds : [statusIds];
 
-        for (let j = 0; j < arr.length; j++) {
-          const id = arr[j];
-          if (!id) continue;
+      // Group client entries by client ID
+      const groupedClientEntries = new Map();
+      const otherEntries = [];
 
-          const statusIdStr = id.toString();
+      for (let j = 0; j < arr.length; j++) {
+        const id = arr[j];
+        if (!id) continue;
 
-          // Handle "with_" statuses
-          let statusName;
-          if (typeof id === 'string' && id.startsWith('with_')) {
+        const statusIdStr = id.toString();
 
-            const employeeId = id.slice(5);
-            const firstUnderscoreIndex = employeeId.indexOf('_');
-            const extractedId = firstUnderscoreIndex === -1 ? employeeId : employeeId.slice(0, firstUnderscoreIndex);
-
-            // Find employee - optimize by checking the map first
-            let withEmployeeName = employeeMap.get(extractedId);
-
-            if (!withEmployeeName) {
-              // Fallback: search in employeesArray
-              const employee = employeesArray.find(e => e.id.toString() === extractedId);
-              withEmployeeName = employee?.name;
+        if (typeof id === 'string' && id.startsWith('client-')) {
+          const match = id.match(/client-(\d+)(?:_type-(\d+))?/);
+          const clientId = match?.[1];
+          const typeId = match?.[2];
+          
+          if (clientId) {
+            const clientName = clientMap.get(clientId) || `Client ${clientId}`;
+            
+            if (!groupedClientEntries.has(clientId)) {
+              groupedClientEntries.set(clientId, {
+                clientName: clientName,
+                types: new Set(),
+                statusIds: []
+              });
             }
-
-            statusName = `With ${withEmployeeName || 'Unknown'}`;
-          } else if (typeof id === 'string' && id.startsWith('client-')) {
-            // Client entry - extract id and lookup client name
-            const match = id.match(/client-(\d+)/);
-            const clientId = match ? match[1] : null;
-            if (clientId) {
-              statusName = clientMap.get(clientId) || `Client ${clientId}`;
-            } else {
-              statusName = 'Client Unknown';
+            
+            const clientEntry = groupedClientEntries.get(clientId);
+            if (typeId) {
+              const typeName = typeMap.get(typeId) || `Type ${typeId}`;
+              clientEntry.types.add(typeName);
             }
-          } else if (typeof id === 'string' && id.startsWith('status-')) {
-            // Handle frontend-prefixed status tokens like "status-1"
-            const m = id.match(/status-(\d+)/);
-            const extracted = m ? m[1] : id;
-            statusName = statusMap.get(extracted) || `Status ${extracted}`;
-          } else {
-            // Normal status lookup - use the existing map (covers numeric or plain ids)
-            statusName = statusMap.get(statusIdStr) || `Status ${statusIdStr}`;
+            clientEntry.statusIds.push(statusIdStr);
           }
-
-          rows.push({
-            employeeId: emp.id,
-            employeeName: emp.name,
-            extension: emp.ext || emp.extension || 'N/A',
-            date,
-            statusId: statusIdStr,
-            statusName: statusName,
-          });
+        } else {
+          otherEntries.push(id);
         }
       }
-    }
 
-    return rows;
-  }, [employeesArray, statusesArray, scheduleData]);
+      // Process grouped client entries
+      for (const [clientId, clientData] of groupedClientEntries) {
+        const types = Array.from(clientData.types);
+        let statusName;
+        
+        if (types.length > 0) {
+          // Join types with hyphens if they're separate
+          statusName = `${clientData.clientName} (${types.join('-')})`;
+        } else {
+          statusName = clientData.clientName;
+        }
+
+        // Get state information - check all status IDs for this client
+        let stateInfo = null;
+        for (const statusId of clientData.statusIds) {
+          const foundState = getEntryState(emp.id, date, statusId);
+          if (foundState) {
+            stateInfo = foundState;
+            break; // Use the first found state
+          }
+        }
+
+        rows.push({
+          employeeId: emp.id,
+          employeeName: emp.name,
+          extension: emp.ext || emp.extension || 'N/A',
+          date,
+          statusId: `client-${clientId}`,
+          statusName: statusName,
+          baseStatusName: clientData.clientName,
+          stateInfo: stateInfo
+        });
+      }
+
+      // Process other entries (non-client)
+      for (let j = 0; j < otherEntries.length; j++) {
+        const id = otherEntries[j];
+        const statusIdStr = id.toString();
+
+        // Handle status names for non-client entries
+        let statusName;
+        let baseStatusName;
+        
+        if (typeof id === 'string' && id.startsWith('with_')) {
+          const employeeId = id.slice(5);
+          const firstUnderscoreIndex = employeeId.indexOf('_');
+          const extractedId = firstUnderscoreIndex === -1 ? employeeId : employeeId.slice(0, firstUnderscoreIndex);
+
+          let withEmployeeName = employeeMap.get(extractedId);
+
+          if (!withEmployeeName) {
+            const employee = employeesArray.find(e => e.id.toString() === extractedId);
+            withEmployeeName = employee?.name;
+          }
+
+          statusName = `With ${withEmployeeName || 'Unknown'}`;
+          baseStatusName = statusName;
+        } else if (typeof id === 'string' && id.startsWith('status-')) {
+          const m = id.match(/status-(\d+)/);
+          const extracted = m ? m[1] : id;
+          const baseName = statusMap.get(extracted) || `Status ${extracted}`;
+          
+          statusName = baseName;
+          baseStatusName = baseName;
+        } else {
+          const baseName = statusMap.get(statusIdStr) || `Status ${statusIdStr}`;
+          statusName = baseName;
+          baseStatusName = baseName;
+        }
+
+        // Get state information
+        const stateInfo = getEntryState(emp.id, date, statusIdStr);
+
+        rows.push({
+          employeeId: emp.id,
+          employeeName: emp.name,
+          extension: emp.ext || emp.extension || 'N/A',
+          date,
+          statusId: statusIdStr,
+          statusName: statusName,
+          baseStatusName: baseStatusName,
+          stateInfo: stateInfo
+        });
+      }
+    }
+  }
+
+  console.log('📊 Detailed data with grouped clients:', rows);
+  return rows;
+}, [employeesArray, statusesArray, scheduleData, clientsArray, scheduleTypesArray, getEntryState]);
 
   const filteredResults = useMemo(() => {
     if (!detailedData.length) return [];
@@ -304,12 +640,10 @@ export default function Analytics() {
       results = results.filter(r => r.employeeId.toString() === filters.employee.toString());
     }
 
-    // Status filter - handle ALL cases including "with_" filters
+    // Status filter
     if (filters.status) {
       const filterStatusId = filters.status.toString();
 
-      // First, check if this is the "With ..." status from the database
-      // Find the status in normalized statusesArray
       const selectedStatus = statusesArray?.find(s =>
         s.id.toString() === filterStatusId
       );
@@ -318,22 +652,16 @@ export default function Analytics() {
         (selectedStatus.label?.toLowerCase().includes('with') ||
           selectedStatus.name?.toLowerCase().includes('with'));
 
-      // CASE 1: It's a "With ..." status from the database
       if (isWithStatus) {
-        console.log('🔍 DEBUG - Filtering by "With ..." status from DB');
-        // Show ALL employees who have ANY "with_" status
         results = results.filter(r =>
           typeof r.statusId === 'string' && r.statusId.includes('with_')
         );
       }
-      // CASE 2: It's our custom "All With" filter
       else if (filterStatusId === 'all_with') {
-        // Show ALL employees who have ANY "with_" status
         results = results.filter(r =>
           typeof r.statusId === 'string' && r.statusId.includes('with_')
         );
       }
-      // CASE 3: "With [Specific Employee]" filter
       else if (filterStatusId.startsWith('with_')) {
         const targetEmployeeId = filterStatusId.slice(5);
 
@@ -342,93 +670,53 @@ export default function Analytics() {
             r.statusId.startsWith(`with_${targetEmployeeId}_`);
         });
       }
-      // CASE 4: Regular status filter (includes numeric IDs and 'status-<id>' tokens)
+      else if (filterStatusId.startsWith('client-')) {
+        const filterMatch = filterStatusId.match(/client-(\d+)/);
+        const filterClientId = filterMatch?.[1];
+        
+        if (filterClientId) {
+          const clientName = clientsArray.find(c => c.id.toString() === filterClientId)?.name;
+          
+          if (clientName) {
+            results = results.filter(r => r.baseStatusName === clientName);
+          }
+        }
+      }
       else {
         const rawFilter = filterStatusId;
-        const isClientFilter = rawFilter.startsWith('client-');
         const isStatusToken = rawFilter.startsWith('status-');
-        const normalizedFilter = isStatusToken ? (rawFilter.match(/status-(\d+)/)?.[1] || rawFilter) : rawFilter;
-
-        if (isClientFilter) {
-          const clientId = rawFilter.match(/client-(\d+)/)?.[1];
-
-          // Build a map of client assignments per date and employee
-          const clientAssignments = new Map();
-          detailedData.forEach(r => {
-            const rid = String(r.statusId || '');
-            if (rid.startsWith('client-')) {
-              const cid = rid.match(/client-(\d+)/)?.[1];
-              if (cid) {
-                const key = `${r.date}_${r.employeeId}`;
-                if (!clientAssignments.has(key)) clientAssignments.set(key, new Set());
-                clientAssignments.get(key).add(cid);
-              }
-            }
-          });
-
-          results = results.filter(r => {
-            const rid = String(r.statusId || '');
-
-            // Direct client entry
-            if (rid === rawFilter || rid === `client-${clientId}`) return true;
-
-            // If this row is a "with_" referring to some employee, include it if
-            // the referenced employee has that client on the same date
-            if (rid.includes('with_')) {
-              const match = rid.match(/with_(\d+)_/);
-              const refEmpId = match ? match[1] : null;
-              if (refEmpId) {
-                const key = `${r.date}_${refEmpId}`;
-                const set = clientAssignments.get(key);
-                if (set && set.has(clientId)) return true;
-              }
-            }
-
-            return false;
-          });
+        
+        if (isStatusToken) {
+          const statusNum = rawFilter.replace('status-', '');
+          const status = statusesArray.find(s => s.id.toString() === statusNum);
+          
+          if (status) {
+            const statusName = status.label || status.name;
+            results = results.filter(r => r.baseStatusName === statusName);
+          }
         } else {
-          // Create a map to store ALL normalized statuses for each employee on each date
-          const statusMap = new Map();
-
-          // First pass: build a map of all non-"with" statuses (store normalized ids)
-          detailedData.forEach(r => {
-            if (!String(r.statusId).includes('with_')) {
-              const key = `${r.date}_${r.employeeId}`;
-              if (!statusMap.has(key)) statusMap.set(key, new Set());
-
-              let stored = String(r.statusId);
-              if (stored.startsWith('status-')) {
-                stored = (stored.match(/status-(\d+)/)?.[1]) || stored;
-              }
-              statusMap.get(key).add(stored);
-            }
-          });
-
-          results = results.filter(r => {
-            const recordStatusId = String(r.statusId || '');
-
-            // normalize record id for direct comparison
-            const recordNormalized = recordStatusId.startsWith('status-')
-              ? (recordStatusId.match(/status-(\d+)/)?.[1] || recordStatusId)
-              : recordStatusId;
-
-            // Direct match against normalized filter
-            if (recordNormalized === normalizedFilter) return true;
-
-            // "With" status check: if the record is a with_ entry, check the underlying statuses of the 'with' employee
-            if (recordStatusId.includes('with_')) {
-              const match = recordStatusId.match(/with_(\d+)_/);
-              if (match) {
-                const withEmployeeId = match[1];
-                const key = `${r.date}_${withEmployeeId}`;
-                const statusSet = statusMap.get(key);
-                return statusSet && statusSet.has(normalizedFilter);
-              }
-            }
-
-            return false;
-          });
+          const status = statusesArray.find(s => s.id.toString() === rawFilter);
+          
+          if (status) {
+            const statusName = status.label || status.name;
+            results = results.filter(r => r.baseStatusName === statusName);
+          }
         }
+      }
+    }
+
+    // Status Type filter (simplified)
+    if (filters.statusType) {
+      const selectedType = filters.statusType;
+      const selectedTypeObj = scheduleTypesArray.find(type => 
+        type.id.toString() === selectedType
+      );
+      
+      if (selectedTypeObj) {
+        const typeNameToFilter = selectedTypeObj.type_name;
+        results = results.filter(r => 
+          r.statusName && r.statusName.includes(`(${typeNameToFilter})`)
+        );
       }
     }
 
@@ -512,14 +800,13 @@ export default function Analytics() {
     }
 
     return results;
-  }, [detailedData, filters]);
+  }, [detailedData, filters, statusesArray, clientsArray, scheduleTypesArray]);
 
   const statusOptions = useMemo(() => {
     if (!statusesArray || !employeesArray) return [];
 
     const options = [];
 
-    // 1. Clients first (so they appear before statuses in the dropdown)
     clientsArray.forEach(c => {
       options.push({
         id: `client-${c.id}`,
@@ -528,21 +815,18 @@ export default function Analytics() {
       });
     });
 
-    // 2. Regular statuses
     options.push(...statusesArray.map(s => ({
       id: s.id.toString(),
       name: s.label || s.name,
       type: 'regular'
     })));
 
-    // 3. "All With" option (shows ALL employees who were with anyone)
     options.push({
       id: 'all_with',
       name: 'With Any Employee',
       type: 'all_with'
     });
 
-    // 4. "With [Specific Employee]" options
     employeesArray.forEach(emp => {
       options.push({
         id: `with_${emp.id}`,
@@ -552,7 +836,17 @@ export default function Analytics() {
     });
 
     return options;
-  }, [statusesArray, employeesArray]);
+  }, [statusesArray, employeesArray, clientsArray]);
+
+  const statusTypeOptions = useMemo(() => {
+    const typeOptions = scheduleTypesArray.map(type => ({
+      id: type.id.toString(),
+      name: type.type_name,
+      type: 'schedule_type'
+    }));
+
+    return typeOptions;
+  }, [scheduleTypesArray]);
 
   const groupedResults = useMemo(() => {
     const map = new Map();
@@ -567,16 +861,19 @@ export default function Analytics() {
           employeeName: r.employeeName,
           extension: r.extension,
           date: r.date,
-          statuses: new Set(),
+          statuses: [],
         });
       }
-      map.get(key).statuses.add(r.statusName);
+      
+      // Add status with state information as an object
+      map.get(key).statuses.push({
+        statusName: r.statusName,
+        stateInfo: r.stateInfo,
+        statusId: r.statusId
+      });
     }
 
-    return Array.from(map.values()).map(g => ({
-      ...g,
-      statuses: Array.from(g.statuses),
-    }));
+    return Array.from(map.values());
   }, [filteredResults]);
 
   const totalPages = Math.ceil(groupedResults.length / itemsPerPage);
@@ -611,23 +908,30 @@ export default function Analytics() {
     }), []
   );
 
-  const getStatusColor = useCallback((statusName) => {
-    // Check statuses first
-    const s = statusesArray?.find(st => st.label === statusName || st.name === statusName);
-    if (s?.color) return s.color;
-
-    // Then check clients
-    const c = clientsArray?.find(cl => cl.name === statusName);
-    if (c?.color) return c.color;
-
-    return '#e5e7eb';
-  }, [statusesArray]);
+  const getStatusColor = useCallback((statusName, stateInfo) => {
+    // Clean the status name for lookup
+    const cleanName = statusName.split('(')[0].trim();
+    
+    // First try to find by client name
+    const client = clientsArray?.find(c => c.name === cleanName);
+    if (client?.color) {
+      return stateInfo?.state_name === 'cancelled' ? `${client.color}80` : client.color;
+    }
+    
+    // Then try to find by status name
+    const status = statusesArray?.find(s => s.label === cleanName || s.name === cleanName);
+    if (status?.color) {
+      return stateInfo?.state_name === 'cancelled' ? `${status.color}80` : status.color;
+    }
+    
+    // Default color with opacity for cancelled
+    return stateInfo?.state_name === 'cancelled' ? '#e5e7eb80' : '#e5e7eb';
+  }, [statusesArray, clientsArray]);
 
   if (isLoading)
     return (
       <div className="analytics-page">
         <div className="skeleton-loading">
-          {/* Header Skeleton */}
           <div className="skeleton-header">
             <div className="skeleton-title-section">
               <div className="skeleton-icon"></div>
@@ -638,7 +942,6 @@ export default function Analytics() {
             </div>
           </div>
 
-          {/* Filter Controls Skeleton */}
           <div className="skeleton-controls">
             <div className="skeleton-filter-header">
               <div className="skeleton-line skeleton-filter-title"></div>
@@ -664,15 +967,12 @@ export default function Analytics() {
             </div>
           </div>
 
-          {/* Results Header Skeleton */}
           <div className="skeleton-results-header">
             <div className="skeleton-results-title"></div>
             <div className="skeleton-results-count"></div>
           </div>
 
-          {/* Table Skeleton */}
           <div className="skeleton-table">
-            {/* Table Header */}
             <div className="skeleton-table-header">
               <div className="skeleton-table-col employee-col"></div>
               <div className="skeleton-table-col extension-col"></div>
@@ -680,7 +980,6 @@ export default function Analytics() {
               <div className="skeleton-table-col date-col"></div>
             </div>
 
-            {/* Table Rows */}
             {[...Array(10)].map((_, rowIndex) => (
               <div key={rowIndex} className="skeleton-table-row">
                 <div className="skeleton-table-cell employee-cell">
@@ -785,6 +1084,18 @@ export default function Analytics() {
                 disabled={isLoading}
               />
             </div>
+
+            <div className="filter-group">
+              <label>Status Type</label>
+              <SearchableFilter
+                options={statusTypeOptions}
+                selectedValue={filters.statusType}
+                onSelect={(value) => handleFilterChange('statusType', value)}
+                placeholder="All Types"
+                disabled={isLoading}
+              />
+            </div>
+
             <div className="filter-group">
               <label>Date / Time Frame</label>
               <div className="select-wrapper">
@@ -905,18 +1216,41 @@ export default function Analytics() {
                     </td>
                     <td className="status-cell">
                       <div className="status-container">
-                        {g.statuses.map((s, i) => (
-                          <span
-                            key={`${g.employeeId}-${g.date}-${s}-${i}`}
-                            className="status-tag"
-                            style={{
-                              backgroundColor: getStatusColor(s),
-                              color: '#000000'
-                            }}
-                          >
-                            {s}
-                          </span>
-                        ))}
+                        {g.statuses.map((statusObj, i) => {
+                          const status = statusObj.statusName;
+                          const stateInfo = statusObj.stateInfo;
+                          const stateName = stateInfo?.state_name || '';
+                          
+                          return (
+                            <div
+                              key={`${g.employeeId}-${g.date}-${i}`}
+                              className={`status-item ${stateName ? `state-${stateName}` : ''}`}
+                            >
+                              <span
+                                className={`status-tag ${stateName ? `has-state state-${stateName}` : ''}`}
+                                style={{
+                                  backgroundColor: getStatusColor(status, stateInfo),
+                                  color: '#000000'
+                                }}
+                              >
+                                {status}
+                                {stateInfo && renderStateIcon(stateInfo)}
+                              </span>
+                              
+                              {/* Show postponed details */}
+                              {stateName === 'postponed' && stateInfo?.postponed_date && (
+                                <div className="postponed-details">
+                                  from {formatDisplayDate(stateInfo.postponed_date)}
+                                </div>
+                              )}
+                              {stateName === 'postponed' && stateInfo?.isTBA && !stateInfo?.postponed_date && (
+                                <div className="postponed-details">
+                                  TBA
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
                       </div>
                     </td>
                     <td className="date-cell">

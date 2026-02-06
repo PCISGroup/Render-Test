@@ -1180,3 +1180,169 @@
   from { opacity: 0; transform: translateY(6px); }
   to { opacity: 1; transform: translateY(0); }
 }
+
+.analytics-table .status-item:not(:last-child)::after {
+  content: "-";
+  position: absolute;
+  right: -12px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: #212326;
+  font-weight: 600;
+}
+
+/* Make sure status items are positioned relatively */
+.analytics-table .status-item {
+  position: relative;
+  display: inline-block;
+  margin-right: 20px;
+}
+
+.analytics-table .status-item:last-child {
+  margin-right: 0;
+}
+
+/* State Icons Styles - Add these to your existing CSS */
+.state-icon {
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  margin-left: 6px !important;
+  border-radius: 50% !important;
+  width: 18px !important;
+  height: 18px !important;
+  vertical-align: middle !important;
+  opacity: 1 !important;
+  visibility: visible !important;
+}
+
+.state-icon svg {
+  width: 14px !important;
+  height: 14px !important;
+  display: block !important;
+  stroke-width: 2.5px !important;
+}
+
+.state-icon.completed {
+  background-color: #10b981 !important;
+  color: white !important;
+}
+
+.state-icon.cancelled {
+  background-color: #ef4444 !important;
+  color: white !important;
+}
+
+.state-icon.postponed {
+  background-color: #f59e0b !important;
+  color: white !important;
+}
+
+/* Make sure status tag properly displays icons */
+.status-tag {
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 4px !important;
+}
+
+/* Icon alignment fix for cancelled state */
+.status-tag.has-state.state-cancelled .state-icon.cancelled {
+  display: inline-flex !important;
+  opacity: 1 !important;
+}
+
+/* For completed state */
+.status-tag.has-state.state-completed .state-icon.completed {
+  display: inline-flex !important;
+  opacity: 1 !important;
+}
+
+/* For postponed state */
+.status-tag.has-state.state-postponed .state-icon.postponed {
+  display: inline-flex !important;
+  opacity: 1 !important;
+}
+
+/* Make sure the X icon is visible for cancelled state */
+.status-tag .state-icon.cancelled svg {
+  stroke: white !important;
+  stroke-width: 2.5px !important;
+}
+
+/* Make sure the Check icon is visible for completed state */
+.status-tag .state-icon.completed svg {
+  stroke: white !important;
+  stroke-width: 2.5px !important;
+}
+
+/* Make sure the Clock icon is visible for postponed state */
+.status-tag .state-icon.postponed svg {
+  stroke: white !important;
+  stroke-width: 2.5px !important;
+}
+
+/* Ensure icons don't get hidden by other styles */
+.status-container .status-item .status-tag .state-icon {
+  display: inline-flex !important;
+  visibility: visible !important;
+}
+
+/* Tooltip only for postponed icon */
+.state-icon.postponed {
+  cursor: help;
+  position: relative;
+}
+
+/* Optional: Make the tooltip appear on hover */
+.state-icon.postponed:hover::after {
+  content: attr(title);
+  position: absolute;
+  bottom: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(0, 0, 0, 0.8);
+  color: white;
+  padding: 8px 12px;
+  border-radius: 4px;
+  font-size: 12px;
+  white-space: nowrap;
+  z-index: 1000;
+  pointer-events: none;
+}
+
+/* Arrow for tooltip */
+.state-icon.postponed:hover::before {
+  content: '';
+  position: absolute;
+  bottom: calc(100% - 5px);
+  left: 50%;
+  transform: translateX(-50%);
+  border-width: 5px;
+  border-style: solid;
+  border-color: rgba(0, 0, 0, 0.8) transparent transparent transparent;
+  z-index: 1001;
+  pointer-events: none;
+}
+
+/* CANCELLED */
+.status-cell .status-item.state-cancelled .status-tag,
+.status-cell .status-tag.state-cancelled {
+  color: #c7c3c3 !important;
+  font-style: italic !important;
+}
+
+/* CANCELLED → light grey + italic */
+.status-item.state-cancelled .status-tag,
+.status-item.state-Cancelled .status-tag {
+  color: #c7c3c3 !important;
+  font-style: italic !important;
+}
+
+/* POSTPONED TBA → light grey + italic */
+.status-item.state-Postponed:has(.state-icon.tba) .status-tag,
+.status-item.state-postponed:has(.state-icon.tba) .status-tag,
+.status-item.state-Postponed:has(.postponed-details) .status-tag,
+.status-item.state-postponed:has(.postponed-details) .status-tag {
+  color: #c7c3c3 !important;
+  font-style: italic !important;
+}

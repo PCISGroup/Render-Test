@@ -7,6 +7,7 @@ import Analytics from './Pages/Analytics';
 import StatusPage from './Pages/Status';
 import Login from './components/Login';
 import AuthCallback from './Pages/AuthCallback';
+import LogsPage from './Pages/Logs';
 import './App.css';
 
 function App() {
@@ -25,6 +26,7 @@ function App() {
             <Route path="employees" element={<Employees />} />
             <Route path="status" element={<StatusPage />} />
             <Route path="analytics" element={<Analytics />} />
+            <Route path="logs" element={<LogsPage />} />
           </Route>
         </Route>
         
