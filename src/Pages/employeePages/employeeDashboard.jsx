@@ -1530,10 +1530,10 @@ const EmployeeDashboard = () => {
                               </div>
                             )}
                             {currentState.cancelledAt && (
-                              <div className="cancellation-time">
-                                {new Date(currentState.cancelledAt).toLocaleString()}
-                              </div>
-                            )}
+  <div className="cancellation-time">
+    {new Date(currentState.cancelledAt).toLocaleString('en-US', { timeZone: 'Asia/Beirut' })}
+  </div>
+)}
                           </div>
                         </div>
                       )}
@@ -1877,7 +1877,7 @@ const EmployeeDashboard = () => {
                     const currentState = stateKey ? statusStates[stateKey]?.[baseIdStr] : null;
                     return currentState?.cancelledAt && (
                       <div className="cancellation-time">
-                        {new Date(currentState.cancelledAt).toLocaleString()}
+                        {new Date(currentState.cancelledAt).toLocaleString('en-US', { timeZone: 'Asia/Beirut' })}
                       </div>
                     );
                   })()}
@@ -2178,7 +2178,7 @@ const EmployeeDashboard = () => {
                     const currentState = stateKey ? statusStates[stateKey]?.[baseIdStr] : null;
                     return currentState?.cancelledAt && (
                       <div className="cancellation-time">
-                        {new Date(currentState.cancelledAt).toLocaleString()}
+                        {new Date(currentState.cancelledAt).toLocaleString('en-US', { timeZone: 'Asia/Beirut' })}
                       </div>
                     );
                   })()}
