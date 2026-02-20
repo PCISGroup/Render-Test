@@ -12,14 +12,9 @@ import { existsSync } from 'fs';
 
 import emailRoutes from './routes/emailRoutes.js';
 import supabaseAdmin from './supabaseAdmin.js';
-
-import { createClient } from '@supabase/supabase-js';
-
-// 🔎 AUDIT LOG
 import { logAction } from './audit.js';
 
-// 🆕 AUDIT HELPERS
-import { parseStatusIdentifier, resolveNames, resolveStateName } from './auditHelper.js';
+import { createClient } from '@supabase/supabase-js';
 
 const supabase = createClient(
   process.env.VITE_SUPABASE_URL,
@@ -39,11 +34,12 @@ app.use(cors({
     'http://localhost:5173',
     'https://pcisgroup.com'
   ],
-  credentials: true,
+  credentials: true ,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'Accept', 'Cache-Control', 'Pragma']
+  allowedHeaders: ['Content-Type', 'Authorization', 'Accept','Cache-Control','Pragma']
 }));
 app.use(express.json());
+
 
 // Configure multer for file uploads
 const storage = multer.memoryStorage();
@@ -82,6 +78,8 @@ app.use(session({
   }
 }));
 
+// Legacy MSAL server routes removed — using Supabase OAuth via client/supabase dashboard
+
 // Health check
 app.get('/api/health', (req, res) => {
   res.json({
@@ -95,7 +93,7 @@ app.get('/api/health', (req, res) => {
 const ALLOWED_EMAILS = ['info@pcis.group', 'se.admin@pcis.group'];
 
 app.post('/api/auth/login', async (req, res) => {
-  const { access_token } = req.body;
+  const { access_token, extension } = req.body;
   if (!access_token) return res.status(400).json({ error: 'Token required' });
 
   try {
@@ -104,19 +102,96 @@ app.post('/api/auth/login', async (req, res) => {
 
     const userEmail = data.user.email.toLowerCase();
 
-    if (!ALLOWED_EMAILS.includes(userEmail)) {
-      return res.status(403).json({ error: 'Access denied' });
+    // Check if user is admin
+    if (ALLOWED_EMAILS.includes(userEmail)) {
+      req.session.userEmail = userEmail;
+      req.session.userRole = 'admin';
+      return res.json({ success: true, user: { email: userEmail, role: 'admin' } });
     }
 
-    req.session.userEmail = userEmail;
-    req.session.userRole = 'admin';
+    // Check if user is employee (must have valid extension)
+    if (extension) {
+      const empResult = await query(
+        'SELECT id, name, ext FROM employees WHERE ext = $1',
+        [extension.trim()]
+      );
 
-    res.json({ success: true, user: { email: userEmail, role: 'admin' } });
+      if (empResult.rows.length === 1) {
+        const employee = empResult.rows[0];
+        req.session.userEmail = userEmail;
+        req.session.userRole = 'employee';
+        req.session.employeeId = employee.id;
+        
+        return res.json({ 
+          success: true, 
+          user: { 
+            email: userEmail, 
+            role: 'employee',
+            employeeId: employee.id,
+            employeeName: employee.name
+          } 
+        });
+      }
+    }
+
+    // If neither admin nor valid employee
+    return res.status(403).json({ error: 'Access denied - not authorized' });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
+
+// Employee lookup by extension (no auth required for login flow)
+app.get('/api/auth/employee-by-extension', async (req, res) => {
+  try {
+    const { extension } = req.query;
+    
+    if (!extension || !extension.trim()) {
+      return res.status(400).json({ 
+        found: false, 
+        error: 'Extension is required' 
+      });
+    }
+
+    const result = await query(
+      'SELECT id, name, ext FROM employees WHERE ext = $1',
+      [extension.trim()]
+    );
+
+    if (result.rows.length === 0) {
+      return res.json({ 
+        found: false, 
+        error: 'No employee found for this extension' 
+      });
+    }
+
+    if (result.rows.length > 1) {
+      return res.json({ 
+        found: true,
+        multiple: true,
+        name: result.rows[0].name,
+        error: 'Multiple employees found for this extension'
+      });
+    }
+
+    const employee = result.rows[0];
+    return res.json({ 
+      found: true,
+      multiple: false,
+      id: employee.id,
+      name: employee.name,
+      ext: employee.ext
+    });
+  } catch (err) {
+    console.error('Error looking up employee by extension:', err);
+    res.status(500).json({ 
+      found: false,
+      error: 'Could not verify extension. Try again.' 
+    });
+  }
+});
+
 
 async function requireSession(req, res, next) {
   console.log('🔐 requireSession checking:', req.path);
@@ -139,10 +214,6 @@ async function requireSession(req, res, next) {
 
   console.log('✅ Token verified for:', data.user.email);
 
-  const userEmail = data.user.email.toLowerCase();
-  const allowed = ['info@pcis.group', 'se.admin@pcis.group'];
-  if (!allowed.includes(userEmail)) return res.status(403).json({ error: 'Access denied' });
-
   req.user = {
     id: data.user.id,
     email: data.user.email
@@ -151,199 +222,151 @@ async function requireSession(req, res, next) {
   next();
 }
 
-// Helper function to get detailed names for audit logs (FIXED VERSION)
-async function getDetailedLogData(employeeId, clientId, statusId, scheduleTypeId, withEmployeeId) {
-  const details = {};
-  
-  if (employeeId) {
-    try {
-      const empRes = await pool.query("SELECT name FROM employees WHERE id = $1", [employeeId]);
-      details.employee_name = empRes.rows[0]?.name || `Employee ${employeeId}`;
-    } catch {
-      details.employee_name = `Employee ${employeeId}`;
-    }
-  }
-  
-  if (withEmployeeId) {
-    try {
-      const withEmpRes = await pool.query("SELECT name FROM employees WHERE id = $1", [withEmployeeId]);
-      details.with_employee_name = withEmpRes.rows[0]?.name || `Employee ${withEmployeeId}`;
-    } catch {
-      details.with_employee_name = `Employee ${withEmployeeId}`;
-    }
-  }
-  
-  if (clientId) {
-    try {
-      const clientRes = await pool.query("SELECT name FROM clients WHERE id = $1", [clientId]);
-      details.client_name = clientRes.rows[0]?.name || `Client ${clientId}`;
-    } catch {
-      details.client_name = `Client ${clientId}`;
-    }
-  }
-  
-  if (statusId) {
-    try {
-      const statusRes = await pool.query("SELECT label FROM statuses WHERE id = $1", [statusId]);
-      details.status_label = statusRes.rows[0]?.label || `Status ${statusId}`;
-    } catch {
-      details.status_label = `Status ${statusId}`;
-    }
-  }
-  
-  if (scheduleTypeId) {
-    try {
-      const typeRes = await pool.query("SELECT type_name FROM schedule_types WHERE id = $1", [scheduleTypeId]);
-      details.schedule_type_name = typeRes.rows[0]?.type_name || `Type ${scheduleTypeId}`;
-    } catch {
-      details.schedule_type_name = `Type ${scheduleTypeId}`;
-    }
-  }
-  
-  return details;
-}
-
-// Helper function to get schedule type name
-async function getScheduleTypeName(typeId) {
-  if (!typeId) return null;
-  try {
-    const typeRes = await pool.query("SELECT type_name FROM schedule_types WHERE id = $1", [typeId]);
-    return typeRes.rows[0]?.type_name || `Type ${typeId}`;
-  } catch {
-    return `Type ${typeId}`;
-  }
-}
-
-// ===============================
-// Schedule States (Bulk GET)
-// ===============================
+// server.js - Add this endpoint
 app.get('/api/schedule-states/bulk', requireSession, async (req, res) => {
   try {
     const { employeeIds, startDate, endDate } = req.query;
-
+    
     if (!employeeIds || !startDate || !endDate) {
-      return res.status(400).json({
-        success: false,
-        error: 'Missing parameters'
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Missing parameters' 
       });
     }
-
+    
+    // Convert employeeIds string to array
     const idArray = employeeIds.split(',').map(id => parseInt(id)).filter(id => !isNaN(id));
-
-    const queryText = `
-      SELECT 
-        es.employee_id,
-        es.date,
-        CASE 
-          WHEN es.with_employee_id IS NOT NULL AND es.status_id IS NOT NULL 
-            THEN CONCAT('with_', es.with_employee_id, '_status-', es.status_id)
-          WHEN es.client_id IS NOT NULL AND es.schedule_type_id IS NOT NULL 
-            THEN CONCAT('client-', es.client_id, '_type-', es.schedule_type_id)
-          WHEN es.client_id IS NOT NULL 
-            THEN CONCAT('client-', es.client_id)
-          WHEN es.status_id IS NOT NULL 
-            THEN CONCAT('status-', es.status_id)
-        END as status_identifier,
-        ss.state_name,
-        cr.reason as cancellation_reason,
-        cr.note as cancellation_note,
-        cr.created_at as cancelled_at,
-        es.postponed_date
-      FROM employee_schedule es
-      LEFT JOIN schedule_states ss ON es.schedule_state_id = ss.id
-      LEFT JOIN cancellation_reasons cr ON es.cancellation_reason_id = cr.id
-      WHERE es.employee_id = ANY($1)
-        AND es.date BETWEEN $2 AND $3
-        AND (es.status_id IS NOT NULL OR es.client_id IS NOT NULL)
-      ORDER BY es.employee_id, es.date
+    
+    const query = `
+        SELECT 
+    es.employee_id,
+    es.date,
+    -- Build the correct status identifier
+    CASE 
+      WHEN es.with_employee_id IS NOT NULL AND es.status_id IS NOT NULL 
+        THEN CONCAT('with_', es.with_employee_id, '_status-', es.status_id)
+      WHEN es.client_id IS NOT NULL AND es.schedule_type_id IS NOT NULL 
+        THEN CONCAT('client-', es.client_id, '_type-', es.schedule_type_id)
+      WHEN es.client_id IS NOT NULL 
+        THEN CONCAT('client-', es.client_id)
+      WHEN es.status_id IS NOT NULL 
+        THEN CONCAT('status-', es.status_id)
+    END as status_identifier,
+    ss.state_name,
+    cr.reason as cancellation_reason,
+    cr.note as cancellation_note,
+    cr.created_at as cancelled_at,
+    es.postponed_date
+  FROM employee_schedule es
+  LEFT JOIN schedule_states ss ON es.schedule_state_id = ss.id
+  LEFT JOIN cancellation_reasons cr ON es.cancellation_reason_id = cr.id  -- FIXED: Proper JOIN condition
+  WHERE es.employee_id = ANY($1)
+    AND es.date BETWEEN $2 AND $3
+    AND (es.status_id IS NOT NULL OR es.client_id IS NOT NULL)
+  ORDER BY es.employee_id, es.date
     `;
-
-    const result = await pool.query(queryText, [idArray, startDate, endDate]);
-
+    
+    const result = await pool.query(query, [idArray, startDate, endDate]);
+    
+    // Transform for frontend
     const states = result.rows.map(row => ({
       employee_id: row.employee_id,
       date: row.date,
-      status_id: row.status_identifier,
+      status_id: row.status_identifier, // This is the key part!
       state_name: row.state_name,
-      cancellation_reason: row.cancellation_reason || null,
-      cancellation_note: row.cancellation_note || null,
-      cancelled_at: row.cancelled_at || null,
+        cancellation_reason: row.cancellation_reason || null,
+  cancellation_note: row.cancellation_note || null,
+  cancelled_at: row.cancelled_at || null, 
       postponed_date: row.postponed_date
     }));
-
+    
     res.json({
       success: true,
-      states
+      states: states
     });
-
+    
   } catch (error) {
     console.error('Error in bulk endpoint:', error);
-    res.status(500).json({
-      success: false,
-      error: error.message
+    res.status(500).json({ 
+      success: false, 
+      error: error.message 
     });
   }
 });
 
 // ===========================================
-// Schedule States GET
+// Schedule States
 // ===========================================
 app.get('/api/schedule-states', requireSession, async (req, res) => {
   try {
     const { employeeId, startDate, endDate } = req.query;
-
-    console.log('🔍 GET /api/schedule-states called with:', {
-      employeeId, startDate, endDate
+    
+    console.log('🔍 GET /api/schedule-states called with:', { 
+      employeeId, startDate, endDate 
     });
-
+    
     if (!employeeId) {
-      return res.status(400).json({
-        success: false,
-        error: 'employeeId is required'
+      return res.status(400).json({ 
+        success: false, 
+        error: 'employeeId is required' 
       });
     }
-
-    const queryText = `
+    
+    const query = `
       SELECT 
-        es.*,
-        ss.state_name,
-        cr.reason as cancellation_reason,
-        cr.note as cancellation_note,
-        cr.created_at as cancelled_at,
-        CASE 
-          WHEN es.with_employee_id IS NOT NULL AND es.status_id IS NOT NULL 
-            THEN CONCAT('with_', es.with_employee_id, '_status-', es.status_id)
-          WHEN es.client_id IS NOT NULL AND es.schedule_type_id IS NOT NULL 
-            THEN CONCAT('client-', es.client_id, '_type-', es.schedule_type_id)
-          WHEN es.client_id IS NOT NULL 
-            THEN CONCAT('client-', es.client_id)
-          WHEN es.status_id IS NOT NULL 
-            THEN CONCAT('status-', es.status_id)
-          ELSE NULL
-        END as status_identifier
-      FROM employee_schedule es
-      LEFT JOIN schedule_states ss ON es.schedule_state_id = ss.id
-      LEFT JOIN cancellation_reasons cr ON es.cancellation_reason_id = cr.id
-      WHERE es.employee_id = $1 
-        AND es.date BETWEEN $2 AND $3
-        AND (es.status_id IS NOT NULL OR es.client_id IS NOT NULL)
-      ORDER BY es.date
+  es.*,
+  ss.state_name,
+  cr.reason as cancellation_reason,
+  cr.note as cancellation_note,
+  cr.created_at as cancelled_at,
+  -- Build the EXACT same identifier format as frontend expects
+  CASE 
+    -- "with_employeeId_status-statusId" format
+    WHEN es.with_employee_id IS NOT NULL AND es.status_id IS NOT NULL 
+      THEN CONCAT('with_', es.with_employee_id, '_status-', es.status_id)
+    -- "client-id_type-typeId" format
+    WHEN es.client_id IS NOT NULL AND es.schedule_type_id IS NOT NULL 
+      THEN CONCAT('client-', es.client_id, '_type-', es.schedule_type_id)
+    -- "client-id" format (no type)
+    WHEN es.client_id IS NOT NULL 
+      THEN CONCAT('client-', es.client_id)
+    -- "status-id" format
+    WHEN es.status_id IS NOT NULL 
+      THEN CONCAT('status-', es.status_id)
+    ELSE NULL
+  END as status_identifier
+FROM employee_schedule es
+LEFT JOIN schedule_states ss ON es.schedule_state_id = ss.id
+LEFT JOIN cancellation_reasons cr ON es.cancellation_reason_id = cr.id  -- NEW JOIN
+WHERE es.employee_id = $1 
+  AND es.date BETWEEN $2 AND $3
+  AND (es.status_id IS NOT NULL OR es.client_id IS NOT NULL)
+ORDER BY es.date
     `;
-
-    const result = await pool.query(queryText, [employeeId, startDate, endDate]);
-
+    
+    const result = await pool.query(query, [employeeId, startDate, endDate]);
+    
     console.log(`📊 Found ${result.rows.length} schedule entries WITH STATES`);
-
-    // Convert to Lebanon date (UTC+2)
+    
+    // FIX: Convert UTC dates to Lebanon dates
     const scheduleStates = result.rows.map(row => {
+      // Convert UTC date to Lebanon date (UTC+2)
       const utcDate = new Date(row.date);
       const lebanonDate = new Date(utcDate.getTime() + (2 * 60 * 60 * 1000)); // Add 2 hours
-
+      
       const year = lebanonDate.getUTCFullYear();
       const month = String(lebanonDate.getUTCMonth() + 1).padStart(2, '0');
       const day = String(lebanonDate.getUTCDate()).padStart(2, '0');
       const lebanonDateStr = `${year}-${month}-${day}`;
-
+      
+      // Convert cancelled_at timestamp to Lebanon timezone string
+      let cancelledAt = null;
+      if (row.cancelled_at) {
+        const cancelledUtcDate = new Date(row.cancelled_at);
+        const cancelledLebanonDate = new Date(cancelledUtcDate.getTime() + (2 * 60 * 60 * 1000)); // Add 2 hours for Lebanon timezone
+        cancelledAt = cancelledLebanonDate.toISOString();
+      }
+      
       return {
         id: row.id,
         status_id: row.status_identifier,
@@ -351,58 +374,59 @@ app.get('/api/schedule-states', requireSession, async (req, res) => {
         state_id: row.schedule_state_id,
         cancellation_reason: row.cancellation_reason || null,
         cancellation_note: row.cancellation_note || null,
-        cancelled_at: row.cancelled_at || null,
+        cancelled_at: cancelledAt, 
         postponed_date: row.postponed_date,
-        date: lebanonDateStr,
+        date: lebanonDateStr, // ← RETURN LEBANON DATE, NOT UTC!
         debug: {
           original_utc: row.date,
           converted_to: lebanonDateStr
         }
       };
     });
-
+    
     console.log('🔍 Response with LEBANON dates:', scheduleStates);
-
-    res.json({
-      success: true,
-      scheduleStates
+    
+    res.json({ 
+      success: true, 
+      scheduleStates 
     });
-
+    
   } catch (error) {
     console.error('❌ Error fetching schedule states:', error);
-    res.status(500).json({
-      success: false,
+    res.status(500).json({ 
+      success: false, 
       error: 'Failed to fetch schedule states',
-      details: error.message
+      details: error.message 
     });
   }
 });
 
 // ===========================================
-// Schedule States - UPDATED FOR TBA (POST)
+// Schedule States - UPDATED FOR TBA
 // ===========================================
+// UPDATED Backend API endpoint - NEW LOGIC
 app.post('/api/schedule-state', requireSession, async (req, res) => {
   console.log('🔵 POST /api/schedule-state received:', req.body);
-
+  
   const dbClient = await pool.connect();
-
+  
   try {
     await dbClient.query('BEGIN');
-
+    
     const { employeeId, date, statusId, stateName, postponedDate, isTBA } = req.body;
-
-    console.log('📝 Processing schedule state for:', {
-      employeeId, date, statusId, stateName, postponedDate, isTBA
+    
+    console.log('📝 Processing schedule state for:', { 
+      employeeId, date, statusId, stateName, postponedDate, isTBA 
     });
-
+    
     if (!employeeId || !date || !statusId) {
       await dbClient.query('ROLLBACK');
-      return res.status(400).json({
-        success: false,
-        error: 'Missing required fields'
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Missing required fields' 
       });
     }
-
+    
     // 1. Parse the statusId to build WHERE clause
     let whereClause = 'employee_id = $1 AND date = $2';
     let params = [employeeId, date];
@@ -414,22 +438,22 @@ app.post('/api/schedule-state', requireSession, async (req, res) => {
       params.push(statusNum);
       paramIndex++;
       whereClause += ` AND client_id IS NULL AND with_employee_id IS NULL`;
-
+      
     } else if (statusId.startsWith('client-')) {
       if (statusId.includes('_type-')) {
         const [clientPart, typePart] = statusId.split('_type-');
         const clientNum = parseInt(clientPart.replace('client-', ''), 10);
         const typeNum = parseInt(typePart, 10);
-
+        
         whereClause += ` AND client_id = $${paramIndex}`;
         params.push(clientNum);
         paramIndex++;
-
+        
         whereClause += ` AND schedule_type_id = $${paramIndex}`;
         params.push(typeNum);
         paramIndex++;
         whereClause += ` AND status_id IS NULL AND with_employee_id IS NULL`;
-
+        
       } else {
         const clientNum = parseInt(statusId.replace('client-', ''), 10);
         whereClause += ` AND client_id = $${paramIndex}`;
@@ -442,13 +466,13 @@ app.post('/api/schedule-state', requireSession, async (req, res) => {
       if (parts.length >= 3) {
         const withEmployeeId = parseInt(parts[1], 10);
         const statusPart = parts[2];
-
+        
         if (statusPart.startsWith('status-')) {
           const statusNum = parseInt(statusPart.replace('status-', ''), 10);
           whereClause += ` AND with_employee_id = $${paramIndex}`;
           params.push(withEmployeeId);
           paramIndex++;
-
+          
           whereClause += ` AND status_id = $${paramIndex}`;
           params.push(statusNum);
           paramIndex++;
@@ -456,16 +480,16 @@ app.post('/api/schedule-state', requireSession, async (req, res) => {
         }
       }
     }
-
+    
     // 2. Get or create schedule state
     let scheduleStateId = null;
-
+    
     if (stateName) {
       const stateCheck = await dbClient.query(
         'SELECT id FROM schedule_states WHERE LOWER(state_name) = LOWER($1)',
         [stateName]
       );
-
+      
       if (stateCheck.rows.length > 0) {
         scheduleStateId = stateCheck.rows[0].id;
       } else {
@@ -476,31 +500,32 @@ app.post('/api/schedule-state', requireSession, async (req, res) => {
         scheduleStateId = newState.rows[0].id;
       }
     }
-
-    // 3. Handle POSTPONED state
+    
+    // 3. Handle POSTPONED state - NEW LOGIC
     if (stateName === 'postponed') {
       console.log('🔄 Processing postponed state with NEW logic');
-
+      
       if (isTBA) {
         // TBA: Keep on original date, mark as postponed
         console.log('📅 TBA: Keeping on original date', date);
-
+        
+        // UPDATE the existing entry to mark it as postponed
         const updateQuery = `
           UPDATE employee_schedule 
           SET schedule_state_id = $${paramIndex}, postponed_date = NULL
           WHERE ${whereClause}
           RETURNING *
         `;
-
+        
         params.push(scheduleStateId);
-
+        
         const result = await dbClient.query(updateQuery, params);
-
+        
         if (result.rows.length === 0) {
           // Create new entry if doesn't exist
           let insertQuery = '';
           let insertParams = [employeeId, date, scheduleStateId];
-
+          
           if (statusId.startsWith('status-')) {
             const statusNum = parseInt(statusId.replace('status-', ''), 10);
             insertQuery = `
@@ -515,7 +540,7 @@ app.post('/api/schedule-state', requireSession, async (req, res) => {
               const [clientPart, typePart] = statusId.split('_type-');
               const clientNum = parseInt(clientPart.replace('client-', ''), 10);
               const typeNum = parseInt(typePart, 10);
-
+              
               insertQuery = `
                 INSERT INTO employee_schedule 
                 (employee_id, date, client_id, schedule_type_id, schedule_state_id)
@@ -538,7 +563,7 @@ app.post('/api/schedule-state', requireSession, async (req, res) => {
             if (parts.length >= 3) {
               const withEmployeeId = parseInt(parts[1], 10);
               const statusPart = parts[2];
-
+              
               if (statusPart.startsWith('status-')) {
                 const statusNum = parseInt(statusPart.replace('status-', ''), 10);
                 insertQuery = `
@@ -551,31 +576,33 @@ app.post('/api/schedule-state', requireSession, async (req, res) => {
               }
             }
           }
-
+          
           if (insertQuery) {
             await dbClient.query(insertQuery, insertParams);
           }
         }
-
+        
       } else if (postponedDate) {
-        // Specific date: move entry
+        // Specific date: DELETE from original, INSERT to new date
         console.log('📅 Specific date: Moving from', date, 'to', postponedDate);
-
+        
+        // DELETE from original date
         const deleteQuery = `
           DELETE FROM employee_schedule 
           WHERE ${whereClause}
           RETURNING *
         `;
-
+        
         console.log('🗑️ Delete query:', deleteQuery);
         console.log('🗑️ Delete params:', params);
-
+        
         const deleteResult = await dbClient.query(deleteQuery, params);
         console.log('🗑️ Deleted rows:', deleteResult.rows.length);
-
+        
+        // INSERT to new date with postponed_date = original date
         let insertQuery = '';
-        let insertParams = [employeeId, postponedDate, scheduleStateId, date]; // original date stored
-
+        let insertParams = [employeeId, postponedDate, scheduleStateId, date]; // Store original date
+        
         if (statusId.startsWith('status-')) {
           const statusNum = parseInt(statusId.replace('status-', ''), 10);
           insertQuery = `
@@ -585,13 +612,13 @@ app.post('/api/schedule-state', requireSession, async (req, res) => {
             RETURNING *
           `;
           insertParams.splice(2, 0, statusNum);
-
+          
         } else if (statusId.startsWith('client-')) {
           if (statusId.includes('_type-')) {
             const [clientPart, typePart] = statusId.split('_type-');
             const clientNum = parseInt(clientPart.replace('client-', ''), 10);
             const typeNum = parseInt(typePart, 10);
-
+            
             insertQuery = `
               INSERT INTO employee_schedule 
               (employee_id, date, client_id, schedule_type_id, schedule_state_id, postponed_date)
@@ -599,7 +626,7 @@ app.post('/api/schedule-state', requireSession, async (req, res) => {
               RETURNING *
             `;
             insertParams.splice(2, 0, clientNum, typeNum);
-
+            
           } else {
             const clientNum = parseInt(statusId.replace('client-', ''), 10);
             insertQuery = `
@@ -615,7 +642,7 @@ app.post('/api/schedule-state', requireSession, async (req, res) => {
           if (parts.length >= 3) {
             const withEmployeeId = parseInt(parts[1], 10);
             const statusPart = parts[2];
-
+            
             if (statusPart.startsWith('status-')) {
               const statusNum = parseInt(statusPart.replace('status-', ''), 10);
               insertQuery = `
@@ -628,35 +655,36 @@ app.post('/api/schedule-state', requireSession, async (req, res) => {
             }
           }
         }
-
+        
         if (insertQuery) {
           console.log('📝 Insert query:', insertQuery);
           console.log('📝 Insert params:', insertParams);
-
+          
           const insertResult = await dbClient.query(insertQuery, insertParams);
           console.log('✅ Inserted row:', insertResult.rows[0]);
         }
       }
-
+      
     } else {
-      // 4. For non-postponed (completed/cancelled), update same date
+      // 4. For non-postponed states (completed/cancelled), update on current date
       const updateQuery = `
         UPDATE employee_schedule 
         SET schedule_state_id = $${paramIndex}, postponed_date = NULL
         WHERE ${whereClause}
         RETURNING *
       `;
-
+      
       params.push(scheduleStateId);
-
+      
       const result = await dbClient.query(updateQuery, params);
-
+      
       if (result.rows.length === 0) {
         console.log('⚠️ No existing schedule entry found, creating new one');
-
+        
+        // Create new entry on current date
         let insertQuery = '';
         let insertParams = [employeeId, date, scheduleStateId];
-
+        
         if (statusId.startsWith('status-')) {
           const statusNum = parseInt(statusId.replace('status-', ''), 10);
           insertQuery = `
@@ -671,7 +699,7 @@ app.post('/api/schedule-state', requireSession, async (req, res) => {
             const [clientPart, typePart] = statusId.split('_type-');
             const clientNum = parseInt(clientPart.replace('client-', ''), 10);
             const typeNum = parseInt(typePart, 10);
-
+            
             insertQuery = `
               INSERT INTO employee_schedule 
               (employee_id, date, client_id, schedule_type_id, schedule_state_id)
@@ -694,7 +722,7 @@ app.post('/api/schedule-state', requireSession, async (req, res) => {
           if (parts.length >= 3) {
             const withEmployeeId = parseInt(parts[1], 10);
             const statusPart = parts[2];
-
+            
             if (statusPart.startsWith('status-')) {
               const statusNum = parseInt(statusPart.replace('status-', ''), 10);
               insertQuery = `
@@ -707,68 +735,103 @@ app.post('/api/schedule-state', requireSession, async (req, res) => {
             }
           }
         }
-
+        
         if (insertQuery) {
           await dbClient.query(insertQuery, insertParams);
         }
       }
     }
-
+    
     await dbClient.query('COMMIT');
-
-    // 🔎 AUDIT LOG — enriched & consistent
-    const parsed = parseStatusIdentifier(statusId);
-    const names = await resolveNames({
-      employeeId,
-      withEmployeeId: parsed.withEmployeeId,
-      clientId: parsed.clientId,
-      statusId: parsed.statusId,
-      scheduleTypeId: parsed.scheduleTypeId
-    });
-    const stateInfo = await resolveStateName(scheduleStateId);
-
-    // Determine action based on state
-    let actionType = 'UPDATE';
-    if (stateName === 'cancelled') actionType = 'DELETE';
-    else if (stateName === 'postponed') actionType = 'UPDATE';
-    else if (stateName === 'completed') actionType = 'UPDATE';
-
-    // Fetch ALL names for the audit log
-    const allNames = await getDetailedLogData(
-      employeeId,
-      parsed.clientId,
-      parsed.statusId,
-      parsed.scheduleTypeId,
-      parsed.withEmployeeId
-    );
-
-    await logAction({
-      userId: req.user.id,
-      userEmail: req.user.email,
-      action: actionType,
-      tableName: "employee_schedule",
-      recordId: `${employeeId}:${date}:${statusId}`,
-      after: {
-        employee_id: employeeId,
-        employee_name: allNames.employee_name || `Employee ${employeeId}`,
-        with_employee_id: parsed.withEmployeeId || null,
-        with_employee_name: allNames.with_employee_name || (parsed.withEmployeeId ? `Employee ${parsed.withEmployeeId}` : null),
-        date,
-        status_type: parsed.statusType,
-        client_id: parsed.clientId || null,
-        client_name: allNames.client_name || (parsed.clientId ? `Client ${parsed.clientId}` : null),
-        status_id: parsed.statusId || null,
-        status_label: allNames.status_label || (parsed.statusId ? `Status ${parsed.statusId}` : null),
-        schedule_type_id: parsed.scheduleTypeId || null,
-        schedule_type_name: allNames.schedule_type_name || (parsed.scheduleTypeId ? `Type ${parsed.scheduleTypeId}` : null),
-        state_id: stateInfo.state_id,
-        state_name: stateInfo.state_name,
-        isTBA: !!isTBA,
-        postponedDate: postponedDate || null,
-        action_type: actionType.toLowerCase()
+    
+    // Log the schedule state change with detailed names
+    try {
+      // Fetch employee name
+      const empResult = await pool.query('SELECT name FROM employees WHERE id = $1', [employeeId]);
+      const employeeName = empResult.rows[0]?.name || `Employee ${employeeId}`;
+      
+      // Fetch client/status name based on statusId
+      let statusDetails = '';
+      let clientId = null;
+      let clientName = null;
+      let statusTypeId = null;
+      let statusLabel = null;
+      let scheduleTypeId = null;
+      let scheduleTypeName = null;
+      let withEmployeeId = null;
+      let withEmployeeName = null;
+      
+      if (statusId.startsWith('status-')) {
+        const statusNum = parseInt(statusId.replace('status-', ''), 10);
+        const statusResult = await pool.query('SELECT label FROM statuses WHERE id = $1', [statusNum]);
+        statusTypeId = statusNum;
+        statusLabel = statusResult.rows[0]?.label || `Status ${statusNum}`;
+        statusDetails = statusLabel;
+      } else if (statusId.startsWith('client-')) {
+        if (statusId.includes('_type-')) {
+          const [clientPart, typePart] = statusId.split('_type-');
+          const clientNum = parseInt(clientPart.replace('client-', ''), 10);
+          const typeNum = parseInt(typePart, 10);
+          const clientResult = await pool.query('SELECT name FROM clients WHERE id = $1', [clientNum]);
+          const typeResult = await pool.query('SELECT type_name FROM schedule_types WHERE id = $1', [typeNum]);
+          clientId = clientNum;
+          clientName = clientResult.rows[0]?.name || `Client ${clientNum}`;
+          scheduleTypeId = typeNum;
+          scheduleTypeName = typeResult.rows[0]?.type_name || `Type ${typeNum}`;
+          statusDetails = `${clientName} (${scheduleTypeName})`;
+        } else {
+          const clientNum = parseInt(statusId.replace('client-', ''), 10);
+          const clientResult = await pool.query('SELECT name FROM clients WHERE id = $1', [clientNum]);
+          clientId = clientNum;
+          clientName = clientResult.rows[0]?.name || `Client ${clientNum}`;
+          statusDetails = clientName;
+        }
+      } else if (statusId.startsWith('with_')) {
+        const parts = statusId.split('_');
+        if (parts.length >= 3) {
+          withEmployeeId = parseInt(parts[1], 10);
+          const statusPart = parts[2];
+          if (statusPart.startsWith('status-')) {
+            const statusNum = parseInt(statusPart.replace('status-', ''), 10);
+            const statusResult = await pool.query('SELECT label FROM statuses WHERE id = $1', [statusNum]);
+            const withEmpResult = await pool.query('SELECT name FROM employees WHERE id = $1', [withEmployeeId]);
+            statusTypeId = statusNum;
+            statusLabel = statusResult.rows[0]?.label || `Status ${statusNum}`;
+            withEmployeeName = withEmpResult.rows[0]?.name || `Employee ${withEmployeeId}`;
+            statusDetails = `${statusLabel} with ${withEmployeeName}`;
+          }
+        }
       }
-    });
-
+      
+      await logAction({
+        userId: req.user.id,
+        userEmail: req.user.email,
+        action: 'UPDATE',
+        tableName: 'employee_schedule',
+        recordId: `${employeeId}:${date}`,
+        after: {
+          employee_id: employeeId,
+          employee_name: employeeName,
+          date: date,
+          status_details: statusDetails,
+          state_name: stateName,
+          postponed_date: postponedDate,
+          is_tba: isTBA,
+          reason: req.body.reason || null,
+          client_id: clientId,
+          client_name: clientName,
+          status_id: statusTypeId,
+          status_label: statusLabel,
+          schedule_type_id: scheduleTypeId,
+          schedule_type_name: scheduleTypeName,
+          with_employee_id: withEmployeeId,
+          with_employee_name: withEmployeeName
+        }
+      });
+    } catch (auditErr) {
+      console.error('⚠️ Audit log failed:', auditErr);
+    }
+    
     res.json({
       success: true,
       state: stateName,
@@ -776,80 +839,175 @@ app.post('/api/schedule-state', requireSession, async (req, res) => {
       isTBA: isTBA,
       message: 'Schedule state saved successfully'
     });
-
+    
   } catch (error) {
     await dbClient.query('ROLLBACK');
     console.error('❌ Error saving schedule state:', error);
-    res.status(500).json({
-      success: false,
+    res.status(500).json({ 
+      success: false, 
       error: 'Failed to save schedule state',
-      details: error.message
+      details: error.message 
     });
   } finally {
     dbClient.release();
   }
 });
+// Helper function to add to postponed date (for backward compatibility)
+async function addToPostponedDate(dbClient, employeeId, postponedDate, statusId) {
+  console.log('📅 Adding to postponed date:', { employeeId, postponedDate, statusId });
+  
+  try {
+    // 1. Parse the statusId
+    let query = '';
+    let params = [];
+    
+    if (statusId.startsWith('status-')) {
+      const statusNum = parseInt(statusId.replace('status-', ''), 10);
+      
+      // Check if EXACT same entry already exists on postponed date
+      query = `
+        SELECT id FROM employee_schedule 
+        WHERE employee_id = $1 AND date = $2 AND status_id = $3
+          AND with_employee_id IS NULL
+          AND client_id IS NULL
+          AND schedule_type_id IS NULL
+      `;
+      params = [employeeId, postponedDate, statusNum];
+      
+    } else if (statusId.startsWith('client-')) {
+      if (statusId.includes('_type-')) {
+        const [clientPart, typePart] = statusId.split('_type-');
+        const clientNum = parseInt(clientPart.replace('client-', ''), 10);
+        const typeNum = parseInt(typePart, 10);
+        
+        query = `
+          SELECT id FROM employee_schedule 
+          WHERE employee_id = $1 AND date = $2 
+            AND client_id = $3 AND schedule_type_id = $4
+            AND with_employee_id IS NULL
+        `;
+        params = [employeeId, postponedDate, clientNum, typeNum];
+        
+      } else {
+        const clientNum = parseInt(statusId.replace('client-', ''), 10);
+        
+        query = `
+          SELECT id FROM employee_schedule 
+          WHERE employee_id = $1 AND date = $2 AND client_id = $3
+            AND schedule_type_id IS NULL
+            AND with_employee_id IS NULL
+            AND status_id IS NULL
+        `;
+        params = [employeeId, postponedDate, clientNum];
+      }
+    }
+    
+    // 2. Check if it already exists
+    const checkResult = await dbClient.query(query, params);
+    
+    if (checkResult.rows.length > 0) {
+      console.log('⚠️ Entry already exists on postponed date, skipping');
+      return; // Don't insert duplicate
+    }
+    
+    // 3. Insert new entry (only if doesn't exist)
+    if (statusId.startsWith('status-')) {
+      const statusNum = parseInt(statusId.replace('status-', ''), 10);
+      await dbClient.query(
+        `INSERT INTO employee_schedule (employee_id, date, status_id) VALUES ($1, $2, $3)`,
+        [employeeId, postponedDate, statusNum]
+      );
+      console.log('✅ Added status to postponed date');
+      
+    } else if (statusId.startsWith('client-')) {
+      if (statusId.includes('_type-')) {
+        const [clientPart, typePart] = statusId.split('_type-');
+        const clientNum = parseInt(clientPart.replace('client-', ''), 10);
+        const typeNum = parseInt(typePart, 10);
+        await dbClient.query(
+          `INSERT INTO employee_schedule (employee_id, date, client_id, schedule_type_id) VALUES ($1, $2, $3, $4)`,
+          [employeeId, postponedDate, clientNum, typeNum]
+        );
+        console.log('✅ Added client with type to postponed date');
+        
+      } else {
+        const clientNum = parseInt(statusId.replace('client-', ''), 10);
+        await dbClient.query(
+          `INSERT INTO employee_schedule (employee_id, date, client_id) VALUES ($1, $2, $3)`,
+          [employeeId, postponedDate, clientNum]
+        );
+        console.log('✅ Added client to postponed date');
+      }
+    }
+    
+  } catch (error) {
+    console.error('❌ Error in addToPostponedDate:', error);
+    // Don't throw - don't break the main operation
+  }
+}
 
 // ===========================================
 // Cancellation Reasons
 // ===========================================
 app.post('/api/cancellation-reason', requireSession, async (req, res) => {
   console.log('🔵 POST /api/cancellation-reason received:', req.body);
-
+  
   const dbClient = await pool.connect();
-
+  
   try {
     await dbClient.query('BEGIN');
-
+    
     const { employeeId, date, statusId, reason, note } = req.body;
-
-    console.log('📝 Processing cancellation reason for:', {
-      employeeId, date, statusId, reason, note
+    
+    console.log('📝 Processing cancellation reason for:', { 
+      employeeId, date, statusId, reason, note 
     });
-
+    
     if (!employeeId || !date || !statusId || !reason) {
       await dbClient.query('ROLLBACK');
-      return res.status(400).json({
-        success: false,
-        error: 'Missing required fields'
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Missing required fields' 
       });
     }
-
-    const reasonResult = await dbClient.query(
-      `INSERT INTO cancellation_reasons (reason, note) 
-       VALUES ($1, $2) RETURNING id, created_at`,
-      [reason, note || null]
-    );
-
-    const cancellationReasonId = reasonResult.rows[0].id;
-    const cancelledAt = reasonResult.rows[0].created_at;
-
+    
+    // 1. Create cancellation reason record
+   const reasonResult = await dbClient.query(
+  `INSERT INTO cancellation_reasons (reason, note) 
+   VALUES ($1, $2) RETURNING id, created_at`,  // ← ADD created_at!
+  [reason, note || null]
+);
+    
+   const cancellationReasonId = reasonResult.rows[0].id;
+const cancelledAt = reasonResult.rows[0].created_at;
+    
+    // 2. Parse the statusId to build WHERE clause
     let whereClause = 'employee_id = $1 AND date = $2';
     let params = [employeeId, date];
     let paramIndex = 3;
-
+    
     if (statusId.startsWith('status-')) {
       const statusNum = parseInt(statusId.replace('status-', ''), 10);
       whereClause += ` AND status_id = $${paramIndex}`;
       params.push(statusNum);
       paramIndex++;
       whereClause += ` AND client_id IS NULL AND with_employee_id IS NULL`;
-
+      
     } else if (statusId.startsWith('client-')) {
       if (statusId.includes('_type-')) {
         const [clientPart, typePart] = statusId.split('_type-');
         const clientNum = parseInt(clientPart.replace('client-', ''), 10);
         const typeNum = parseInt(typePart, 10);
-
+        
         whereClause += ` AND client_id = $${paramIndex}`;
         params.push(clientNum);
         paramIndex++;
-
+        
         whereClause += ` AND schedule_type_id = $${paramIndex}`;
         params.push(typeNum);
         paramIndex++;
         whereClause += ` AND status_id IS NULL AND with_employee_id IS NULL`;
-
+        
       } else {
         const clientNum = parseInt(statusId.replace('client-', ''), 10);
         whereClause += ` AND client_id = $${paramIndex}`;
@@ -862,13 +1020,13 @@ app.post('/api/cancellation-reason', requireSession, async (req, res) => {
       if (parts.length >= 3) {
         const withEmployeeId = parseInt(parts[1], 10);
         const statusPart = parts[2];
-
+        
         if (statusPart.startsWith('status-')) {
           const statusNum = parseInt(statusPart.replace('status-', ''), 10);
           whereClause += ` AND with_employee_id = $${paramIndex}`;
           params.push(withEmployeeId);
           paramIndex++;
-
+          
           whereClause += ` AND status_id = $${paramIndex}`;
           params.push(statusNum);
           paramIndex++;
@@ -876,23 +1034,25 @@ app.post('/api/cancellation-reason', requireSession, async (req, res) => {
         }
       }
     }
-
+    
+    // 3. Update the schedule entry with cancellation reason
     const updateQuery = `
       UPDATE employee_schedule 
       SET cancellation_reason_id = $${paramIndex}
       WHERE ${whereClause}
       RETURNING *
     `;
-
+    
     params.push(cancellationReasonId);
-
+    
     const updateResult = await dbClient.query(updateQuery, params);
-
+    
     if (updateResult.rows.length === 0) {
       console.log('⚠️ No matching schedule entry found for cancellation reason with provided statusId');
+      // Fallback: if the statusId is a typed client (client-X_type-Y), try to attach reason to any entry with same client_id
       try {
         if (typeof statusId === 'string' && statusId.startsWith('client-') && statusId.includes('_type-')) {
-          const [clientPart] = statusId.split('_type-');
+          const [clientPart, typePart] = statusId.split('_type-');
           const clientNum = parseInt(clientPart.replace('client-', ''), 10);
           const fallbackQuery = `
             UPDATE employee_schedule
@@ -914,59 +1074,26 @@ app.post('/api/cancellation-reason', requireSession, async (req, res) => {
         console.error('❌ Error during fallback attempt for cancellation reason:', fbErr);
       }
     }
+    
+    // NOTE: Logging is already handled by /api/schedule-state endpoint with full details
+    // Don't log here to avoid duplicate entries in audit_logs
 
     await dbClient.query('COMMIT');
-
-    // 🔎 AUDIT LOG — enriched names
-    const parsed = parseStatusIdentifier(statusId);
     
-    // Fetch ALL names for the audit log
-    const allNames = await getDetailedLogData(
-      employeeId,
-      parsed.clientId,
-      parsed.statusId,
-      null, // scheduleTypeId not needed for cancellation
-      parsed.withEmployeeId
-    );
-
-    await logAction({
-      userId: req.user.id,
-      userEmail: req.user.email,
-      action: 'DELETE', // Cancellation is like a delete
-      tableName: 'employee_schedule',
-      recordId: `${employeeId}:${date}:${statusId}`,
-      after: {
-        employee_id: employeeId,
-        employee_name: allNames.employee_name || `Employee ${employeeId}`,
-        with_employee_id: parsed.withEmployeeId || null,
-        with_employee_name: allNames.with_employee_name || (parsed.withEmployeeId ? `Employee ${parsed.withEmployeeId}` : null),
-        client_id: parsed.clientId || null,
-        client_name: allNames.client_name || (parsed.clientId ? `Client ${parsed.clientId}` : null),
-        status_id: parsed.statusId || null,
-        status_label: allNames.status_label || (parsed.statusId ? `Status ${parsed.statusId}` : null),
-        date,
-        cancellationReasonId,
-        reason,
-        note: note || null,
-        cancelledAt,
-        action_type: 'cancelled'
-      }
-    });
-
     res.json({
       success: true,
       cancellationReasonId: cancellationReasonId,
       cancelledAt: cancelledAt,
       message: 'Cancellation reason saved successfully'
     });
-
+    
   } catch (error) {
     await dbClient.query('ROLLBACK');
     console.error('❌ Error saving cancellation reason:', error);
-    res.status(500).json({
-      success: false,
+    res.status(500).json({ 
+      success: false, 
       error: 'Failed to save cancellation reason',
-      details: error.message
+      details: error.message 
     });
   } finally {
     dbClient.release();
@@ -977,8 +1104,8 @@ app.post('/api/cancellation-reason', requireSession, async (req, res) => {
 app.get('/api/cancellation-reasons', requireSession, async (req, res) => {
   try {
     const { startDate, endDate } = req.query;
-
-    let queryText = `
+    
+    let query = `
       SELECT 
         es.date,
         e.name as employee_name,
@@ -994,28 +1121,28 @@ app.get('/api/cancellation-reasons', requireSession, async (req, res) => {
       INNER JOIN cancellation_reasons cr ON es.cancellation_reason_id = cr.id
       WHERE es.cancellation_reason_id IS NOT NULL
     `;
-
+    
     let params = [];
-
+    
     if (startDate && endDate) {
-      queryText += ` AND es.date BETWEEN $1 AND $2`;
+      query += ` AND es.date BETWEEN $1 AND $2`;
       params = [startDate, endDate];
     }
-
-    queryText += ` ORDER BY es.date DESC, e.name`;
-
-    const result = await pool.query(queryText, params);
-
+    
+    query += ` ORDER BY es.date DESC, e.name`;
+    
+    const result = await pool.query(query, params);
+    
     res.json({
       success: true,
       cancellations: result.rows
     });
-
+    
   } catch (error) {
     console.error('❌ Error fetching cancellation reasons:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Failed to fetch cancellation reasons'
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to fetch cancellation reasons' 
     });
   }
 });
@@ -1024,19 +1151,18 @@ app.get('/api/cancellation-reasons', requireSession, async (req, res) => {
 app.delete('/api/schedule-state', requireSession, async (req, res) => {
   try {
     const { employeeId, date, statusId } = req.body;
-
+    
     if (!employeeId || !date || !statusId) {
-      return res.status(400).json({
-        success: false,
-        error: 'Missing required fields'
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Missing required fields' 
       });
     }
-
+    
     let whereClause = 'employee_id = $1 AND date = $2';
     let params = [employeeId, date];
     let paramIndex = 3;
     let shouldDeleteRow = false;
-    let clientId = null; // keep for log enrichment
 
     if (statusId.startsWith('status-')) {
       const statusNum = parseInt(statusId.replace('status-', ''), 10);
@@ -1046,20 +1172,20 @@ app.delete('/api/schedule-state', requireSession, async (req, res) => {
       whereClause += ` AND client_id IS NULL AND with_employee_id IS NULL`;
     } else if (statusId.startsWith('client-')) {
       if (statusId.includes('_type-')) {
+        // Typed status: DELETE the entire row (for multi-type support)
         shouldDeleteRow = true;
         const [clientPart, typePart] = statusId.split('_type-');
         const clientNum = parseInt(clientPart.replace('client-', ''), 10);
         const typeNum = parseInt(typePart, 10);
-        clientId = clientNum;
-
+        
         whereClause += ` AND client_id = $${paramIndex}`;
         params.push(clientNum);
         paramIndex++;
         whereClause += ` AND schedule_type_id = $${paramIndex}`;
         params.push(typeNum);
       } else {
+        // Plain client: just clear the state
         const clientNum = parseInt(statusId.replace('client-', ''), 10);
-        clientId = clientNum;
         whereClause += ` AND client_id = $${paramIndex}`;
         params.push(clientNum);
         paramIndex++;
@@ -1067,73 +1193,80 @@ app.delete('/api/schedule-state', requireSession, async (req, res) => {
       }
     }
 
-    let queryText, result;
+    let query, result;
     if (shouldDeleteRow) {
-      queryText = `
+      // For typed statuses, DELETE the entire row
+      query = `
         DELETE FROM employee_schedule 
         WHERE ${whereClause}
         RETURNING *
       `;
-      result = await pool.query(queryText, params);
+      result = await pool.query(query, params);
       console.log(`🗑️ Deleted ${result.rowCount} typed status row(s) for statusId: ${statusId}`);
     } else {
-      queryText = `
+      // For plain status/client, just clear the state
+      query = `
         UPDATE employee_schedule 
         SET schedule_state_id = NULL, postponed_date = NULL
         WHERE ${whereClause}
         RETURNING *
       `;
-      result = await pool.query(queryText, params);
+      result = await pool.query(query, params);
       console.log(`🔄 Cleared state for ${result.rowCount} row(s) with statusId: ${statusId}`);
     }
-
-    // 🔎 AUDIT LOG — enriched
-    const parsed = parseStatusIdentifier(statusId);
     
-    // Fetch ALL names for the audit log
-    const allNames = await getDetailedLogData(
-      employeeId,
-      clientId || parsed.clientId,
-      parsed.statusId,
-      parsed.scheduleTypeId,
-      parsed.withEmployeeId
-    );
-
-    await logAction({
-      userId: req.user.id,
-      userEmail: req.user.email,
-      action: shouldDeleteRow ? 'DELETE' : 'UPDATE',
-      tableName: 'employee_schedule',
-      recordId: `${employeeId}:${date}:${statusId}`,
-      after: {
-        employee_id: employeeId,
-        employee_name: allNames.employee_name || `Employee ${employeeId}`,
-        with_employee_id: parsed.withEmployeeId || null,
-        with_employee_name: allNames.with_employee_name || (parsed.withEmployeeId ? `Employee ${parsed.withEmployeeId}` : null),
-        client_id: clientId || parsed.clientId || null,
-        client_name: allNames.client_name || ((clientId || parsed.clientId) ? `Client ${clientId || parsed.clientId}` : null),
-        status_id: parsed.statusId || null,
-        status_label: allNames.status_label || (parsed.statusId ? `Status ${parsed.statusId}` : null),
-        schedule_type_id: parsed.scheduleTypeId || null,
-        schedule_type_name: allNames.schedule_type_name || (parsed.scheduleTypeId ? `Type ${parsed.scheduleTypeId}` : null),
-        date,
-        cleared: !shouldDeleteRow,
-        deletedRow: shouldDeleteRow,
-        affectedCount: result.rowCount,
-        action_type: shouldDeleteRow ? 'deleted' : 'cleared'
+    // Log the schedule state deletion with detailed names
+    try {
+      // Fetch employee name
+      const empResult = await pool.query('SELECT name FROM employees WHERE id = $1', [employeeId]);
+      const employeeName = empResult.rows[0]?.name || `Employee ${employeeId}`;
+      
+      // Fetch client/status name based on statusId
+      let statusDetails = '';
+      if (statusId.startsWith('status-')) {
+        const statusNum = parseInt(statusId.replace('status-', ''), 10);
+        const statusResult = await pool.query('SELECT label FROM statuses WHERE id = $1', [statusNum]);
+        statusDetails = statusResult.rows[0]?.label || `Status ${statusNum}`;
+      } else if (statusId.startsWith('client-')) {
+        if (statusId.includes('_type-')) {
+          const [clientPart, typePart] = statusId.split('_type-');
+          const clientNum = parseInt(clientPart.replace('client-', ''), 10);
+          const typeNum = parseInt(typePart, 10);
+          const clientResult = await pool.query('SELECT name FROM clients WHERE id = $1', [clientNum]);
+          const typeResult = await pool.query('SELECT name FROM schedule_types WHERE id = $1', [typeNum]);
+          statusDetails = `${clientResult.rows[0]?.name} (${typeResult.rows[0]?.name})`;
+        } else {
+          const clientNum = parseInt(statusId.replace('client-', ''), 10);
+          const clientResult = await pool.query('SELECT name FROM clients WHERE id = $1', [clientNum]);
+          statusDetails = clientResult.rows[0]?.name || `Client ${clientNum}`;
+        }
       }
-    });
-
+      
+      await logAction({
+        userId: req.user.id,
+        userEmail: req.user.email,
+        action: 'DELETE',
+        tableName: 'employee_schedule',
+        recordId: `${employeeId}_${date}_${statusId}`,
+        before: {
+          employee_name: employeeName,
+          status_details: statusDetails
+        }
+      });
+    } catch (auditErr) {
+      console.error('⚠️ Audit log failed:', auditErr);
+    }
+    
     res.json({
       success: true,
       message: shouldDeleteRow ? 'Schedule entry deleted' : 'Schedule state cleared'
     });
-
+    
   } catch (error) {
     console.error('❌ Error clearing schedule state:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Failed to clear schedule state'
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to clear schedule state' 
     });
   }
 });
@@ -1146,14 +1279,18 @@ app.get('/api/schedule-states/all', requireSession, async (req, res) => {
       FROM schedule_states 
       ORDER BY id
     `);
-
+    
+    // Transform to include display names and icons
     const states = result.rows.map(row => {
       const stateName = row.state_name.toLowerCase();
       let displayName = stateName.charAt(0).toUpperCase() + stateName.slice(1);
       let icon = '•';
+      
+      // Set icons for known states
       if (stateName === 'completed') icon = '✓';
       if (stateName === 'cancelled') icon = '✕';
       if (stateName === 'postponed') icon = '⏱';
+      
       return {
         id: row.id,
         state_name: stateName,
@@ -1161,17 +1298,17 @@ app.get('/api/schedule-states/all', requireSession, async (req, res) => {
         icon: icon
       };
     });
-
+    
     res.json({
       success: true,
-      states
+      states: states
     });
-
+    
   } catch (error) {
     console.error('❌ Error fetching all schedule states:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Failed to fetch schedule states'
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to fetch schedule states' 
     });
   }
 });
@@ -1179,12 +1316,14 @@ app.get('/api/schedule-states/all', requireSession, async (req, res) => {
 // Get ALL options for dropdown (statuses + clients combined)
 app.get('/api/combined-options', async (req, res) => {
   try {
+    // Get statuses
     const statusesResult = await query(`
       SELECT id, label as name, color, 'status' as type, NULL as location_id
       FROM statuses 
       ORDER BY label
     `);
-
+    
+    // Get clients (with location info)
     const clientsResult = await query(`
       SELECT 
         c.id, 
@@ -1198,19 +1337,20 @@ app.get('/api/combined-options', async (req, res) => {
       LEFT JOIN locations l ON c.location_id = l.id
       ORDER BY c.name
     `);
-
+    
+    // Combine them
     const combined = [
       ...statusesResult.rows,
       ...clientsResult.rows
     ];
-
+    
     res.json({
       success: true,
       data: combined,
       statuses: statusesResult.rows,
       clients: clientsResult.rows
     });
-
+    
   } catch (err) {
     console.error('Error fetching combined options:', err);
     res.status(500).json({ error: 'Failed to fetch options' });
@@ -1221,18 +1361,18 @@ app.get('/api/combined-options', async (req, res) => {
 
 // Get all statuses
 app.get('/api/statuses', requireSession, async (req, res) => {
-  try {
+   try {
     const result = await query('SELECT * FROM statuses ORDER BY label');
     res.json({
       success: true,
-      data: result.rows,
+      data: result.rows,  // Wrap in data property
       count: result.rows.length
     });
   } catch (err) {
     console.error('Error fetching statuses:', err);
-    res.status(500).json({
+    res.status(500).json({ 
       success: false,
-      error: 'Failed to fetch statuses'
+      error: 'Failed to fetch statuses' 
     });
   }
 });
@@ -1251,21 +1391,23 @@ app.post('/api/statuses', requireSession, async (req, res) => {
       [label.trim(), color]
     );
 
-    // 🔎 AUDIT LOG
+    const newStatus = result.rows[0];
+
+    // Log the creation
     await logAction({
       userId: req.user.id,
       userEmail: req.user.email,
       action: 'CREATE',
       tableName: 'statuses',
-      recordId: result.rows[0].id,
-      after: result.rows[0]
+      recordId: newStatus.id,
+      after: { ...newStatus }
     });
 
-    res.status(201).json(result.rows[0]);
+    res.status(201).json(newStatus);
   } catch (err) {
     console.error('Error creating status:', err);
 
-    if (err.code === '23505') {
+    if (err.code === '23505') { // Unique violation
       res.status(400).json({ error: 'Status with this label already exists' });
     } else {
       res.status(500).json({ error: 'Failed to create status' });
@@ -1283,10 +1425,6 @@ app.put('/api/statuses/:id', requireSession, async (req, res) => {
       return res.status(400).json({ error: 'Status label is required' });
     }
 
-    // 🔎 AUDIT LOG (BEFORE)
-    const beforeRes = await query('SELECT * FROM statuses WHERE id = $1', [id]);
-    const before = beforeRes.rows[0] || null;
-
     const result = await query(
       'UPDATE statuses SET label = $1, color = $2 WHERE id = $3 RETURNING *',
       [label.trim(), color, id]
@@ -1296,22 +1434,11 @@ app.put('/api/statuses/:id', requireSession, async (req, res) => {
       return res.status(404).json({ error: 'Status not found' });
     }
 
-    // 🔎 AUDIT LOG (AFTER)
-    await logAction({
-      userId: req.user.id,
-      userEmail: req.user.email,
-      action: 'UPDATE',
-      tableName: 'statuses',
-      recordId: id,
-      before,
-      after: result.rows[0]
-    });
-
     res.json(result.rows[0]);
   } catch (err) {
     console.error('Error updating status:', err);
 
-    if (err.code === '23505') {
+    if (err.code === '23505') { // Unique violation
       res.status(400).json({ error: 'Status with this label already exists' });
     } else {
       res.status(500).json({ error: 'Failed to update status' });
@@ -1324,10 +1451,7 @@ app.delete('/api/statuses/:id', requireSession, async (req, res) => {
   try {
     const { id } = req.params;
 
-    // 🔎 AUDIT LOG (BEFORE)
-    const beforeRes = await query('SELECT * FROM statuses WHERE id = $1', [id]);
-    const before = beforeRes.rows[0] || null;
-
+    // Check if status is being used in schedules
     const usageCheck = await query(
       'SELECT COUNT(*) FROM employee_schedule WHERE status_id = $1',
       [id]
@@ -1349,14 +1473,14 @@ app.delete('/api/statuses/:id', requireSession, async (req, res) => {
       return res.status(404).json({ error: 'Status not found' });
     }
 
-    // 🔎 AUDIT LOG
+    // Log the deletion
     await logAction({
       userId: req.user.id,
       userEmail: req.user.email,
       action: 'DELETE',
       tableName: 'statuses',
       recordId: id,
-      before
+      before: result.rows[0]
     });
 
     res.json({ message: 'Status deleted successfully' });
@@ -1385,6 +1509,7 @@ app.get('/api/clients', requireSession, async (req, res) => {
   }
 });
 
+
 // Create new client
 app.post('/api/clients', requireSession, async (req, res) => {
   try {
@@ -1396,26 +1521,16 @@ app.post('/api/clients', requireSession, async (req, res) => {
 
     const result = await query(
       'INSERT INTO clients (name, location_id, color) VALUES ($1, $2, $3) RETURNING *',
-      [name.trim(), location_id, color || '#2196F3']
+      [name.trim(), location_id, color || '#2196F3'] // Default blue color
     );
-
-    // 🔎 AUDIT LOG
-    await logAction({
-      userId: req.user.id,
-      userEmail: req.user.email,
-      action: 'CREATE',
-      tableName: 'clients',
-      recordId: result.rows[0].id,
-      after: result.rows[0]
-    });
 
     res.status(201).json(result.rows[0]);
   } catch (err) {
     console.error('Error creating client:', err);
 
-    if (err.code === '23505') {
+    if (err.code === '23505') { // Unique violation
       res.status(400).json({ error: 'Client with this name already exists' });
-    } else if (err.code === '23503') {
+    } else if (err.code === '23503') { // Foreign key violation
       res.status(400).json({ error: 'Invalid location selected' });
     } else {
       res.status(500).json({ error: 'Failed to create client' });
@@ -1433,10 +1548,6 @@ app.put('/api/clients/:id', requireSession, async (req, res) => {
       return res.status(400).json({ error: 'Client name is required' });
     }
 
-    // 🔎 AUDIT LOG (BEFORE)
-    const beforeRes = await query('SELECT * FROM clients WHERE id = $1', [id]);
-    const before = beforeRes.rows[0] || null;
-
     const result = await query(
       `UPDATE clients 
        SET name = $1, location_id = $2, color = $3, updated_at = CURRENT_TIMESTAMP
@@ -1449,24 +1560,13 @@ app.put('/api/clients/:id', requireSession, async (req, res) => {
       return res.status(404).json({ error: 'Client not found' });
     }
 
-    // 🔎 AUDIT LOG (AFTER)
-    await logAction({
-      userId: req.user.id,
-      userEmail: req.user.email,
-      action: 'UPDATE',
-      tableName: 'clients',
-      recordId: id,
-      before,
-      after: result.rows[0]
-    });
-
     res.json(result.rows[0]);
   } catch (err) {
     console.error('Error updating client:', err);
 
-    if (err.code === '23505') {
+    if (err.code === '23505') { // Unique violation
       res.status(400).json({ error: 'Client with this name already exists' });
-    } else if (err.code === '23503') {
+    } else if (err.code === '23503') { // Foreign key violation
       res.status(400).json({ error: 'Invalid location selected' });
     } else {
       res.status(500).json({ error: 'Failed to update client' });
@@ -1479,10 +1579,7 @@ app.delete('/api/clients/:id', requireSession, async (req, res) => {
   try {
     const { id } = req.params;
 
-    // 🔎 AUDIT LOG (BEFORE)
-    const beforeRes = await query('SELECT * FROM clients WHERE id = $1', [id]);
-    const before = beforeRes.rows[0] || null;
-
+    // Check if client has machines
     const machinesCheck = await query(
       'SELECT COUNT(*) FROM machines WHERE client_id = $1',
       [id]
@@ -1495,6 +1592,7 @@ app.delete('/api/clients/:id', requireSession, async (req, res) => {
       });
     }
 
+    // Check if client is in schedules
     const scheduleCheck = await query(
       'SELECT COUNT(*) FROM employee_schedule WHERE client_id = $1',
       [id]
@@ -1516,17 +1614,7 @@ app.delete('/api/clients/:id', requireSession, async (req, res) => {
       return res.status(404).json({ error: 'Client not found' });
     }
 
-    // 🔎 AUDIT LOG
-    await logAction({
-      userId: req.user.id,
-      userEmail: req.user.email,
-      action: 'DELETE',
-      tableName: 'clients',
-      recordId: id,
-      before
-    });
-
-    res.json({
+    res.json({ 
       message: 'Client deleted successfully',
       deletedClient: result.rows[0]
     });
@@ -1540,7 +1628,7 @@ app.delete('/api/clients/:id', requireSession, async (req, res) => {
 app.get('/api/clients/by-location/:location_id', requireSession, async (req, res) => {
   try {
     const { location_id } = req.params;
-
+    
     const result = await query(`
       SELECT 
         c.*,
@@ -1559,7 +1647,7 @@ app.get('/api/clients/by-location/:location_id', requireSession, async (req, res
   }
 });
 
-// Import statuses from file
+// Import statuses from file 
 app.post('/api/statuses/import', requireSession, upload.single('file'), async (req, res) => {
   let client;
 
@@ -1573,6 +1661,7 @@ app.post('/api/statuses/import', requireSession, upload.single('file'), async (r
 
     console.log(`Processing file: ${file.originalname}, Size: ${file.size} bytes, Column: ${selectedColumn}`);
 
+    // STRICT FILE TYPE CHECK
     const fileExt = file.originalname.toLowerCase().split('.').pop();
     if (!['txt', 'csv'].includes(fileExt)) {
       return res.status(400).json({
@@ -1581,6 +1670,7 @@ app.post('/api/statuses/import', requireSession, upload.single('file'), async (r
       });
     }
 
+    // FILE SIZE LIMIT
     if (file.size > 5 * 1024 * 1024) {
       return res.status(400).json({
         success: false,
@@ -1597,6 +1687,7 @@ app.post('/api/statuses/import', requireSession, upload.single('file'), async (r
 
     let statusLabels = [];
 
+    // READ FILE CONTENT WITH ERROR HANDLING
     let content;
     try {
       content = file.buffer.toString('utf8').trim();
@@ -1614,10 +1705,11 @@ app.post('/api/statuses/import', requireSession, upload.single('file'), async (r
       });
     }
 
+    // PARSE LINES WITH BETTER HANDLING
     const lines = content.split('\n')
       .map(line => line.trim())
-      .filter(line => line.length > 0 && !line.startsWith('#'))
-      .slice(0, 1000);
+      .filter(line => line.length > 0 && !line.startsWith('#')) // Skip empty lines and comments
+      .slice(0, 1000); // Limit to 1000 lines for safety
 
     console.log(`Found ${lines.length} lines in file`);
 
@@ -1628,21 +1720,25 @@ app.post('/api/statuses/import', requireSession, upload.single('file'), async (r
       });
     }
 
+    // HEADER DETECTION - COMMON HEADER WORDS
     const headerWords = new Set([
       'status', 'statuses', 'label', 'labels', 'supplier', 'suppliers',
       'type', 'types', 'category', 'categories', 'title', 'titles',
       'employee status', 'work status', 'client', 'clients', 'customer', 'customers'
     ]);
 
+    // DETECT IF FIRST LINE IS HEADER
     const firstLine = lines[0].toLowerCase();
     let isFirstLineHeader = false;
 
+    // Check if first line contains header-like words
     if (fileExt === 'csv') {
       const firstLineParts = firstLine.split(',');
       isFirstLineHeader = firstLineParts.some(part =>
         headerWords.has(part.trim())
       );
     } else {
+      // For text files, check common separators
       const separators = [',', '\t', '|'];
       for (const sep of separators) {
         if (firstLine.includes(sep)) {
@@ -1655,6 +1751,7 @@ app.post('/api/statuses/import', requireSession, upload.single('file'), async (r
 
     console.log(`First line is header: ${isFirstLineHeader}`);
 
+    // Use data lines only (skip header if detected)
     const dataLines = isFirstLineHeader ? lines.slice(1) : lines;
 
     if (dataLines.length === 0) {
@@ -1666,10 +1763,12 @@ app.post('/api/statuses/import', requireSession, upload.single('file'), async (r
 
     console.log(`Processing ${dataLines.length} data lines`);
 
+    // PROCESS DATA LINES
     statusLabels = dataLines.map((line, index) => {
       try {
         let value = '';
 
+        // For CSV files, always use comma separator
         if (fileExt === 'csv') {
           const parts = line.split(',');
           if (selectedColumn < parts.length) {
@@ -1678,27 +1777,37 @@ app.post('/api/statuses/import', requireSession, upload.single('file'), async (r
             console.log(`Warning: Line ${index + 1} doesn't have column ${selectedColumn + 1}`);
             return '';
           }
-        } else if (fileExt === 'txt') {
+        }
+        // For text files, detect separator
+        else if (fileExt === 'txt') {
+          // Try tab separator first (common in TSV files)
           if (line.includes('\t')) {
             const parts = line.split('\t');
             value = parts[selectedColumn] ? parts[selectedColumn].trim() : '';
-          } else if (line.includes(',')) {
+          }
+          // Then try comma
+          else if (line.includes(',')) {
             const parts = line.split(',');
             value = parts[selectedColumn] ? parts[selectedColumn].trim() : '';
-          } else {
+          }
+          // If no separators, use the whole line (single column)
+          else {
             value = selectedColumn === 0 ? line.trim() : '';
           }
         }
 
+        // VALIDATE EXTRACTED VALUE
         if (!value || value.length === 0) {
           return '';
         }
 
+        // Skip if it's a header word (in case we missed it earlier)
         if (headerWords.has(value.toLowerCase())) {
           console.log(`Skipping header word: ${value}`);
           return '';
         }
 
+        // Limit length for safety
         if (value.length > 100) {
           value = value.substring(0, 100);
         }
@@ -1709,7 +1818,7 @@ app.post('/api/statuses/import', requireSession, upload.single('file'), async (r
         console.log(`Error processing line ${index + 1}:`, error.message);
         return '';
       }
-    }).filter(label => label.length > 0);
+    }).filter(label => label.length > 0); // Remove empty strings
 
     console.log(`Successfully extracted ${statusLabels.length} valid labels`);
 
@@ -1720,6 +1829,7 @@ app.post('/api/statuses/import', requireSession, upload.single('file'), async (r
       });
     }
 
+    // REMOVE DUPLICATES (case insensitive)
     const uniqueLabels = [];
     const seenLabels = new Set();
 
@@ -1733,11 +1843,13 @@ app.post('/api/statuses/import', requireSession, upload.single('file'), async (r
 
     console.log(`After deduplication: ${uniqueLabels.length} unique labels`);
 
+    // DATABASE OPERATIONS
     client = await pool.connect();
 
     try {
       await client.query('BEGIN');
 
+      // Check existing statuses (case insensitive)
       const existingResult = await client.query(
         'SELECT LOWER(label) as lower_label FROM statuses WHERE LOWER(label) = ANY($1)',
         [uniqueLabels.map(label => label.toLowerCase())]
@@ -1750,21 +1862,6 @@ app.post('/api/statuses/import', requireSession, upload.single('file'), async (r
 
       if (newLabels.length === 0) {
         await client.query('ROLLBACK');
-
-        // 🔎 AUDIT LOG — IMPORT (no new labels)
-        await logAction({
-          userId: req.user.id,
-          userEmail: req.user.email,
-          action: 'IMPORT',
-          tableName: 'statuses',
-          recordId: null,
-          after: {
-            importedCount: 0,
-            duplicatesSkipped: uniqueLabels.length,
-            totalFound: uniqueLabels.length
-          }
-        });
-
         return res.json({
           success: true,
           message: 'All statuses already exist in database. No new statuses imported.',
@@ -1774,6 +1871,7 @@ app.post('/api/statuses/import', requireSession, upload.single('file'), async (r
         });
       }
 
+      // INSERT NEW STATUSES IN BATCHES FOR PERFORMANCE
       const batchSize = 50;
       let insertedCount = 0;
 
@@ -1792,21 +1890,7 @@ app.post('/api/statuses/import', requireSession, upload.single('file'), async (r
 
       await client.query('COMMIT');
 
-      // 🔎 AUDIT LOG — IMPORT (success)
-      await logAction({
-        userId: req.user.id,
-        userEmail: req.user.email,
-        action: 'IMPORT',
-        tableName: 'statuses',
-        recordId: null,
-        after: {
-          importedCount: insertedCount,
-          duplicatesSkipped: uniqueLabels.length - insertedCount,
-          totalFound: uniqueLabels.length
-        }
-      });
-
-      const resultPayload = {
+      const result = {
         success: true,
         message: `Successfully imported ${insertedCount} new statuses from ${dataLines.length} data rows`,
         totalFound: uniqueLabels.length,
@@ -1815,8 +1899,8 @@ app.post('/api/statuses/import', requireSession, upload.single('file'), async (r
         headerSkipped: isFirstLineHeader
       };
 
-      console.log('Import completed successfully:', resultPayload);
-      res.json(resultPayload);
+      console.log('Import completed successfully:', result);
+      res.json(result);
 
     } catch (dbError) {
       await client.query('ROLLBACK');
@@ -1842,9 +1926,9 @@ app.post('/api/statuses/import', requireSession, upload.single('file'), async (r
   }
 });
 
-// Import clients from file
+// Import clients from file 
 app.post('/api/clients/import', requireSession, upload.single('file'), async (req, res) => {
-  let dbClient;
+  let dbClient; // Renamed to avoid confusion with "clients" table
 
   try {
     if (!req.file) {
@@ -1856,6 +1940,7 @@ app.post('/api/clients/import', requireSession, upload.single('file'), async (re
 
     console.log(`Processing file: ${file.originalname}, Size: ${file.size} bytes, Column: ${selectedColumn}`);
 
+    // STRICT FILE TYPE CHECK
     const fileExt = file.originalname.toLowerCase().split('.').pop();
     if (!['txt', 'csv'].includes(fileExt)) {
       return res.status(400).json({
@@ -1864,6 +1949,7 @@ app.post('/api/clients/import', requireSession, upload.single('file'), async (re
       });
     }
 
+    // FILE SIZE LIMIT
     if (file.size > 5 * 1024 * 1024) {
       return res.status(400).json({
         success: false,
@@ -1880,6 +1966,7 @@ app.post('/api/clients/import', requireSession, upload.single('file'), async (re
 
     let clientNames = [];
 
+    // READ FILE CONTENT WITH ERROR HANDLING
     let content;
     try {
       content = file.buffer.toString('utf8').trim();
@@ -1897,10 +1984,11 @@ app.post('/api/clients/import', requireSession, upload.single('file'), async (re
       });
     }
 
+    // PARSE LINES WITH BETTER HANDLING
     const lines = content.split('\n')
       .map(line => line.trim())
-      .filter(line => line.length > 0 && !line.startsWith('#'))
-      .slice(0, 1000);
+      .filter(line => line.length > 0 && !line.startsWith('#')) // Skip empty lines and comments
+      .slice(0, 1000); // Limit to 1000 lines for safety
 
     console.log(`Found ${lines.length} lines in file`);
 
@@ -1911,6 +1999,7 @@ app.post('/api/clients/import', requireSession, upload.single('file'), async (re
       });
     }
 
+    // HEADER DETECTION - CLIENT SPECIFIC HEADER WORDS
     const headerWords = new Set([
       'client', 'clients', 'customer', 'customers', 'name', 'names',
       'company', 'companies', 'organization', 'organizations',
@@ -1918,15 +2007,18 @@ app.post('/api/clients/import', requireSession, upload.single('file'), async (re
       'account', 'accounts', 'location', 'locations', 'address'
     ]);
 
+    // DETECT IF FIRST LINE IS HEADER
     const firstLine = lines[0].toLowerCase();
     let isFirstLineHeader = false;
 
+    // Check if first line contains header-like words
     if (fileExt === 'csv') {
       const firstLineParts = firstLine.split(',');
       isFirstLineHeader = firstLineParts.some(part =>
         headerWords.has(part.trim())
       );
     } else {
+      // For text files, check common separators
       const separators = [',', '\t', '|'];
       for (const sep of separators) {
         if (firstLine.includes(sep)) {
@@ -1939,6 +2031,7 @@ app.post('/api/clients/import', requireSession, upload.single('file'), async (re
 
     console.log(`First line is header: ${isFirstLineHeader}`);
 
+    // Use data lines only (skip header if detected)
     const dataLines = isFirstLineHeader ? lines.slice(1) : lines;
 
     if (dataLines.length === 0) {
@@ -1950,10 +2043,12 @@ app.post('/api/clients/import', requireSession, upload.single('file'), async (re
 
     console.log(`Processing ${dataLines.length} data lines`);
 
+    // PROCESS DATA LINES - EXTRACT CLIENT NAMES
     clientNames = dataLines.map((line, index) => {
       try {
         let value = '';
 
+        // For CSV files, always use comma separator
         if (fileExt === 'csv') {
           const parts = line.split(',');
           if (selectedColumn < parts.length) {
@@ -1962,27 +2057,37 @@ app.post('/api/clients/import', requireSession, upload.single('file'), async (re
             console.log(`Warning: Line ${index + 1} doesn't have column ${selectedColumn + 1}`);
             return '';
           }
-        } else if (fileExt === 'txt') {
+        }
+        // For text files, detect separator
+        else if (fileExt === 'txt') {
+          // Try tab separator first (common in TSV files)
           if (line.includes('\t')) {
             const parts = line.split('\t');
             value = parts[selectedColumn] ? parts[selectedColumn].trim() : '';
-          } else if (line.includes(',')) {
+          }
+          // Then try comma
+          else if (line.includes(',')) {
             const parts = line.split(',');
             value = parts[selectedColumn] ? parts[selectedColumn].trim() : '';
-          } else {
+          }
+          // If no separators, use the whole line (single column)
+          else {
             value = selectedColumn === 0 ? line.trim() : '';
           }
         }
 
+        // VALIDATE EXTRACTED VALUE
         if (!value || value.length === 0) {
           return '';
         }
 
+        // Skip if it's a header word (in case we missed it earlier)
         if (headerWords.has(value.toLowerCase())) {
           console.log(`Skipping header word: ${value}`);
           return '';
         }
 
+        // Limit length for safety (clients.name is VARCHAR(255))
         if (value.length > 255) {
           value = value.substring(0, 255);
           console.log(`Warning: Line ${index + 1} truncated to 255 characters`);
@@ -1994,7 +2099,7 @@ app.post('/api/clients/import', requireSession, upload.single('file'), async (re
         console.log(`Error processing line ${index + 1}:`, error.message);
         return '';
       }
-    }).filter(name => name.length > 0);
+    }).filter(name => name.length > 0); // Remove empty strings
 
     console.log(`Successfully extracted ${clientNames.length} valid client names`);
 
@@ -2005,6 +2110,7 @@ app.post('/api/clients/import', requireSession, upload.single('file'), async (re
       });
     }
 
+    // REMOVE DUPLICATES (case insensitive)
     const uniqueNames = [];
     const seenNames = new Set();
 
@@ -2018,11 +2124,13 @@ app.post('/api/clients/import', requireSession, upload.single('file'), async (re
 
     console.log(`After deduplication: ${uniqueNames.length} unique client names`);
 
-    dbClient = await pool.connect();
+    // DATABASE OPERATIONS
+    dbClient = await pool.connect(); // Using dbClient to avoid confusion
 
     try {
       await dbClient.query('BEGIN');
 
+      // Check existing clients (case insensitive)
       const existingResult = await dbClient.query(
         'SELECT LOWER(name) as lower_name FROM clients WHERE LOWER(name) = ANY($1)',
         [uniqueNames.map(name => name.toLowerCase())]
@@ -2035,21 +2143,6 @@ app.post('/api/clients/import', requireSession, upload.single('file'), async (re
 
       if (newClients.length === 0) {
         await dbClient.query('ROLLBACK');
-
-        // 🔎 AUDIT LOG — IMPORT (no new)
-        await logAction({
-          userId: req.user.id,
-          userEmail: req.user.email,
-          action: 'IMPORT',
-          tableName: 'clients',
-          recordId: null,
-          after: {
-            importedCount: 0,
-            duplicatesSkipped: uniqueNames.length,
-            totalFound: uniqueNames.length
-          }
-        });
-
         return res.json({
           success: true,
           message: 'All clients already exist in database. No new clients imported.',
@@ -2059,13 +2152,16 @@ app.post('/api/clients/import', requireSession, upload.single('file'), async (re
         });
       }
 
+      // INSERT NEW CLIENTS IN BATCHES FOR PERFORMANCE
       const batchSize = 50;
       let insertedCount = 0;
 
       for (let i = 0; i < newClients.length; i += batchSize) {
         const batch = newClients.slice(i, i + batchSize);
+        
+        // Create VALUES clause for batch insert
         const placeholders = batch.map((_, idx) => `($${idx + 1})`).join(',');
-
+        
         await dbClient.query(
           `INSERT INTO clients (name) VALUES ${placeholders}`,
           batch
@@ -2076,21 +2172,7 @@ app.post('/api/clients/import', requireSession, upload.single('file'), async (re
 
       await dbClient.query('COMMIT');
 
-      // 🔎 AUDIT LOG — IMPORT (success)
-      await logAction({
-        userId: req.user.id,
-        userEmail: req.user.email,
-        action: 'IMPORT',
-        tableName: 'clients',
-        recordId: null,
-        after: {
-          importedCount: insertedCount,
-          duplicatesSkipped: uniqueNames.length - insertedCount,
-          totalFound: uniqueNames.length
-        }
-      });
-
-      const resultPayload = {
+      const result = {
         success: true,
         message: `Successfully imported ${insertedCount} new clients from ${dataLines.length} data rows`,
         totalFound: uniqueNames.length,
@@ -2099,8 +2181,8 @@ app.post('/api/clients/import', requireSession, upload.single('file'), async (re
         headerSkipped: isFirstLineHeader
       };
 
-      console.log('Import completed successfully:', resultPayload);
-      res.json(resultPayload);
+      console.log('Import completed successfully:', result);
+      res.json(result);
 
     } catch (dbError) {
       await dbClient.query('ROLLBACK');
@@ -2131,6 +2213,7 @@ app.post('/api/clients/import', requireSession, upload.single('file'), async (re
 });
 
 // === EMPLOYEE ROUTES ===
+// Get all employees
 app.get('/api/employees', requireSession, async (req, res) => {
   try {
     const result = await query('SELECT * FROM employees ORDER BY name');
@@ -2159,16 +2242,6 @@ app.post('/api/employees', requireSession, async (req, res) => {
       [name.trim(), ext.trim()]
     );
 
-    // 🔎 AUDIT LOG
-    await logAction({
-      userId: req.user.id,
-      userEmail: req.user.email,
-      action: 'CREATE',
-      tableName: 'employees',
-      recordId: result.rows[0].id,
-      after: result.rows[0]
-    });
-
     res.status(201).json(result.rows[0]);
   } catch (err) {
     console.error('Error creating employee:', err);
@@ -2190,10 +2263,6 @@ app.put('/api/employees/:id', requireSession, async (req, res) => {
       return res.status(400).json({ error: 'Extension number is required' });
     }
 
-    // 🔎 AUDIT LOG (BEFORE)
-    const beforeRes = await query('SELECT * FROM employees WHERE id = $1', [id]);
-    const before = beforeRes.rows[0] || null;
-
     const result = await query(
       'UPDATE employees SET name = $1, ext = $2 WHERE id = $3 RETURNING *',
       [name.trim(), ext.trim(), id]
@@ -2202,17 +2271,6 @@ app.put('/api/employees/:id', requireSession, async (req, res) => {
     if (result.rows.length === 0) {
       return res.status(404).json({ error: 'Employee not found' });
     }
-
-    // 🔎 AUDIT LOG (AFTER)
-    await logAction({
-      userId: req.user.id,
-      userEmail: req.user.email,
-      action: 'UPDATE',
-      tableName: 'employees',
-      recordId: id,
-      before,
-      after: result.rows[0]
-    });
 
     res.json(result.rows[0]);
   } catch (err) {
@@ -2226,10 +2284,7 @@ app.delete('/api/employees/:id', requireSession, async (req, res) => {
   try {
     const { id } = req.params;
 
-    // 🔎 AUDIT LOG (BEFORE)
-    const beforeRes = await query('SELECT * FROM employees WHERE id = $1', [id]);
-    const before = beforeRes.rows[0] || null;
-
+    // Check if employee is being used in schedules
     const usageCheck = await query(
       'SELECT COUNT(*) FROM employee_schedule WHERE employee_id = $1',
       [id]
@@ -2251,16 +2306,6 @@ app.delete('/api/employees/:id', requireSession, async (req, res) => {
       return res.status(404).json({ error: 'Employee not found' });
     }
 
-    // 🔎 AUDIT LOG
-    await logAction({
-      userId: req.user.id,
-      userEmail: req.user.email,
-      action: 'DELETE',
-      tableName: 'employees',
-      recordId: id,
-      before
-    });
-
     res.json({ message: 'Employee deleted successfully' });
   } catch (err) {
     console.error('Error deleting employee:', err);
@@ -2268,9 +2313,6 @@ app.delete('/api/employees/:id', requireSession, async (req, res) => {
   }
 });
 
-// ===============================
-// SCHEDULE GET
-// ===============================
 app.get("/api/schedule", requireSession, async (req, res) => {
   try {
     console.log("🔍 Fetching schedules from database...");
@@ -2292,7 +2334,7 @@ app.get("/api/schedule", requireSession, async (req, res) => {
       LEFT JOIN employees we ON es.with_employee_id = we.id
       LEFT JOIN schedule_states ss ON es.schedule_state_id = ss.id
       WHERE employee_id IS NOT NULL AND (status_id IS NOT NULL OR client_id IS NOT NULL)
-      ORDER BY es.date, es.employee_id, es.id ASC
+      ORDER BY es.date, es.employee_id, es.id ASC  -- ORDER BY date first, then insertion order
     `);
 
     console.log(`📊 Database returned ${result.rows.length} rows`);
@@ -2312,14 +2354,20 @@ app.get("/api/schedule", requireSession, async (req, res) => {
       if (!schedules[empId]) schedules[empId] = {};
       if (!schedules[empId][dateStr]) schedules[empId][dateStr] = [];
 
+      // If it has a with_employee_id, store it differently
       if (row.with_employee_id && row.with_employee_name) {
+        // If it's a 'with' entry, prefer status_id if present
         schedules[empId][dateStr].push(`with_${row.with_employee_id}_status-${row.status_id || ''}`);
       } else if (row.status_id) {
+        // Normal status - prefix to match frontend `status-<id>` format
         schedules[empId][dateStr].push(`status-${row.status_id}`);
       } else if (row.client_id) {
+        // Client entry - check if it has a schedule type
         if (row.schedule_type_id) {
+          // Client with type: "client-{id}_type-{typeId}"
           schedules[empId][dateStr].push(`client-${row.client_id}_type-${row.schedule_type_id}`);
         } else {
+          // Client without type: "client-{id}"
           schedules[empId][dateStr].push(`client-${row.client_id}`);
         }
       }
@@ -2333,25 +2381,17 @@ app.get("/api/schedule", requireSession, async (req, res) => {
   }
 });
 
-// ===============================
-// SCHEDULE SAVE (POST) - FIXED WITH COMPLETE NAME RESOLUTION
-// ===============================
 app.post("/api/schedule", requireSession, async (req, res) => {
   console.log("📥 POST /api/schedule - Body:", req.body);
   const { employeeId, date, items } = req.body;
   const parsedEmployeeId = parseInt(employeeId, 10);
-
+  
   if (isNaN(parsedEmployeeId)) {
     console.warn('⚠️ Invalid employeeId in request:', employeeId);
     return res.status(400).json({ error: 'Invalid employeeId' });
   }
 
   const dbClient = await pool.connect();
-
-  // 🔎 AUDIT LOG — change trackers
-  const createdEntries = [];
-  const updatedTypeChanges = [];
-  let removedEntries = [];
 
   try {
     await dbClient.query("BEGIN");
@@ -2363,8 +2403,12 @@ app.post("/api/schedule", requireSession, async (req, res) => {
        ORDER BY id`,
       [parsedEmployeeId, date]
     );
-
+    
     console.log("🔍 Existing entries:", existingEntries.rows.length);
+
+    // 🔵 AUDIT: Track created and removed items
+    const createdItems = [];
+    const removedItems = [];
 
     // If no items, delete ALL (user cleared everything intentionally)
     if (!Array.isArray(items) || items.length === 0) {
@@ -2372,26 +2416,6 @@ app.post("/api/schedule", requireSession, async (req, res) => {
         "DELETE FROM employee_schedule WHERE employee_id = $1 AND date = $2",
         [parsedEmployeeId, date]
       );
-
-      // Get detailed names for audit log
-      const details = await getDetailedLogData(parsedEmployeeId, null, null, null, null);
-
-      // 🔎 AUDIT LOG — cleared schedule for that day
-      await logAction({
-        userId: req.user.id,
-        userEmail: req.user.email,
-        action: 'DELETE',
-        tableName: 'employee_schedule',
-        recordId: `${parsedEmployeeId}:${date}`,
-        after: {
-          employee_id: parsedEmployeeId,
-          employee_name: details.employee_name || `Employee ${parsedEmployeeId}`,
-          date,
-          clearedAll: true,
-          action_type: 'cleared_all'
-        }
-      });
-
       await dbClient.query("COMMIT");
       console.log('ℹ️ User cleared all entries intentionally');
       return res.json({ success: true });
@@ -2399,31 +2423,32 @@ app.post("/api/schedule", requireSession, async (req, res) => {
 
     // Track processed entries
     const processedEntryIds = new Set();
-
+    
     // Process each requested item
     for (const item of items) {
       console.log(`📝 Processing:`, item);
-
+      
+      // ========== SMART MATCHING LOGIC ==========
       let matchingEntry = null;
-
+      
       if (item.type === 'client-with-type') {
         const clientId = parseInt(item.clientId, 10);
         const scheduleTypeId = parseInt(item.scheduleTypeId, 10);
-
+        
         // Try exact match first
         let result = await dbClient.query(
-          `SELECT id, schedule_state_id, schedule_type_id FROM employee_schedule 
+          `SELECT id, schedule_state_id FROM employee_schedule 
            WHERE employee_id = $1 AND date = $2 
            AND client_id = $3 AND schedule_type_id = $4`,
           [parsedEmployeeId, date, clientId, scheduleTypeId]
         );
-
+        
         if (result.rows.length > 0) {
           matchingEntry = result.rows[0];
         } else {
           // Try ANY entry with same client (preserve state when changing type)
           result = await dbClient.query(
-            `SELECT id, schedule_state_id, schedule_type_id FROM employee_schedule 
+            `SELECT id, schedule_state_id FROM employee_schedule 
              WHERE employee_id = $1 AND date = $2 
              AND client_id = $3 AND client_id IS NOT NULL
              AND id NOT IN (SELECT unnest($4::int[]))
@@ -2431,10 +2456,9 @@ app.post("/api/schedule", requireSession, async (req, res) => {
              LIMIT 1`,
             [parsedEmployeeId, date, clientId, Array.from(processedEntryIds)]
           );
-
+          
           if (result.rows.length > 0) {
             matchingEntry = result.rows[0];
-            const previousType = matchingEntry.schedule_type_id;
             // Update the type on existing entry
             await dbClient.query(
               `UPDATE employee_schedule 
@@ -2442,34 +2466,27 @@ app.post("/api/schedule", requireSession, async (req, res) => {
                WHERE id = $2`,
               [scheduleTypeId, matchingEntry.id]
             );
-            // 🔎 AUDIT — track type change
-            updatedTypeChanges.push({
-              id: matchingEntry.id,
-              client_id: clientId,
-              fromType: previousType,
-              toType: scheduleTypeId
-            });
             console.log(`🔄 Updated client type for entry ${matchingEntry.id}`);
           }
         }
-
+        
       } else if (item.type === 'client') {
         const clientId = parseInt(item.clientId, 10);
-
+        
         // Try exact match (client without type)
         let result = await dbClient.query(
-          `SELECT id, schedule_state_id, schedule_type_id FROM employee_schedule 
+          `SELECT id, schedule_state_id FROM employee_schedule 
            WHERE employee_id = $1 AND date = $2 
            AND client_id = $3 AND schedule_type_id IS NULL`,
           [parsedEmployeeId, date, clientId]
         );
-
+        
         if (result.rows.length > 0) {
           matchingEntry = result.rows[0];
         } else {
           // Try ANY entry with same client (preserve state when removing type)
           result = await dbClient.query(
-            `SELECT id, schedule_state_id, schedule_type_id FROM employee_schedule 
+            `SELECT id, schedule_state_id FROM employee_schedule 
              WHERE employee_id = $1 AND date = $2 
              AND client_id = $3 AND client_id IS NOT NULL
              AND id NOT IN (SELECT unnest($4::int[]))
@@ -2477,10 +2494,9 @@ app.post("/api/schedule", requireSession, async (req, res) => {
              LIMIT 1`,
             [parsedEmployeeId, date, clientId, Array.from(processedEntryIds)]
           );
-
+          
           if (result.rows.length > 0) {
             matchingEntry = result.rows[0];
-            const previousType = matchingEntry.schedule_type_id;
             // Remove type from existing entry
             await dbClient.query(
               `UPDATE employee_schedule 
@@ -2488,25 +2504,18 @@ app.post("/api/schedule", requireSession, async (req, res) => {
                WHERE id = $1`,
               [matchingEntry.id]
             );
-            // 🔎 AUDIT — track type clear
-            updatedTypeChanges.push({
-              id: matchingEntry.id,
-              client_id: clientId,
-              fromType: previousType,
-              toType: null
-            });
             console.log(`🔄 Removed type from client entry ${matchingEntry.id}`);
           }
         }
-
+        
       } else if (item.type === 'status') {
         const parsedId = parseInt(item.id, 10);
         const withEmployee = item.withEmployeeId ? parseInt(item.withEmployeeId, 10) : null;
-
+        
         // Exact match for status
         let queryText = '';
         let params = [parsedEmployeeId, date, parsedId];
-
+        
         if (withEmployee) {
           queryText = `SELECT id, schedule_state_id FROM employee_schedule 
                        WHERE employee_id = $1 AND date = $2 
@@ -2517,208 +2526,245 @@ app.post("/api/schedule", requireSession, async (req, res) => {
                        WHERE employee_id = $1 AND date = $2 
                        AND status_id = $3 AND with_employee_id IS NULL`;
         }
-
+        
         const result = await dbClient.query(queryText, params);
-
+        
         if (result.rows.length > 0) {
           matchingEntry = result.rows[0];
         }
       }
-
+      
       // If no matching entry found, create new one
       if (!matchingEntry) {
         console.log(`🆕 Creating new entry for:`, item);
-
+        
         if (item.type === 'client-with-type') {
           const clientId = parseInt(item.clientId, 10);
           const scheduleTypeId = parseInt(item.scheduleTypeId, 10);
-
+          
           const insertRes = await dbClient.query(
             "INSERT INTO employee_schedule (employee_id, client_id, schedule_type_id, date) VALUES ($1, $2, $3, $4) RETURNING *",
             [parsedEmployeeId, clientId, scheduleTypeId, date]
           );
           matchingEntry = insertRes.rows[0];
-
-          // 🔎 AUDIT — track created entry
-          createdEntries.push({
+          
+          // 🔵 AUDIT: Get names for logging
+          const clientName = await dbClient.query('SELECT name FROM clients WHERE id = $1', [clientId]);
+          const typeName = await dbClient.query('SELECT type_name FROM schedule_types WHERE id = $1', [scheduleTypeId]);
+          
+          createdItems.push({
             id: matchingEntry.id,
-            employee_id: parsedEmployeeId,
-            date,
+            date: date,
             client_id: clientId,
-            schedule_type_id: scheduleTypeId
+            client_name: clientName.rows[0]?.name || `Client ${clientId}`,
+            schedule_type_id: scheduleTypeId,
+            schedule_type_name: typeName.rows[0]?.type_name || `Type ${scheduleTypeId}`,
+            employee_id: parsedEmployeeId,
+            status_type: 'client'
           });
-
+          
         } else if (item.type === 'client') {
           const clientId = parseInt(item.clientId, 10);
-
+          
           const insertRes = await dbClient.query(
             "INSERT INTO employee_schedule (employee_id, client_id, date) VALUES ($1, $2, $3) RETURNING *",
             [parsedEmployeeId, clientId, date]
           );
           matchingEntry = insertRes.rows[0];
-
-          // 🔎 AUDIT — track created entry
-          createdEntries.push({
+          
+          // 🔵 AUDIT: Get names for logging
+          const clientName = await dbClient.query('SELECT name FROM clients WHERE id = $1', [clientId]);
+          
+          createdItems.push({
             id: matchingEntry.id,
-            employee_id: parsedEmployeeId,
-            date,
+            date: date,
             client_id: clientId,
-            schedule_type_id: null
+            client_name: clientName.rows[0]?.name || `Client ${clientId}`,
+            employee_id: parsedEmployeeId,
+            status_type: 'client',
+            schedule_type_id: null,
+            schedule_type_name: null
           });
-
+          
         } else if (item.type === 'status') {
           const parsedId = parseInt(item.id, 10);
           const withEmployee = item.withEmployeeId ? parseInt(item.withEmployeeId, 10) : null;
-
+          
           const insertRes = await dbClient.query(
             "INSERT INTO employee_schedule (employee_id, status_id, date, with_employee_id) VALUES ($1, $2, $3, $4) RETURNING *",
             [parsedEmployeeId, parsedId, date, isNaN(withEmployee) ? null : withEmployee]
           );
           matchingEntry = insertRes.rows[0];
-
-          // 🔎 AUDIT — track created entry
-          createdEntries.push({
+          
+          // 🔵 AUDIT: Get names for logging
+          const statusName = await dbClient.query('SELECT label FROM statuses WHERE id = $1', [parsedId]);
+          let withEmployeeName = null;
+          if (withEmployee) {
+            const withEmpResult = await dbClient.query('SELECT name FROM employees WHERE id = $1', [withEmployee]);
+            withEmployeeName = withEmpResult.rows[0]?.name || `Employee ${withEmployee}`;
+          }
+          
+          createdItems.push({
             id: matchingEntry.id,
-            employee_id: parsedEmployeeId,
-            date,
+            date: date,
             status_id: parsedId,
-            with_employee_id: isNaN(withEmployee) ? null : withEmployee
+            status_label: statusName.rows[0]?.label || `Status ${parsedId}`,
+            employee_id: parsedEmployeeId,
+            status_type: 'status',
+            with_employee_id: withEmployee,
+            with_employee_name: withEmployeeName
           });
         }
       }
-
+      
       // Mark this entry as processed
       if (matchingEntry) {
         processedEntryIds.add(matchingEntry.id);
       }
     }
 
-    // Delete ONLY truly orphaned entries
+    // Delete ONLY truly orphaned entries (not similar to any requested item)
     const entriesToDelete = existingEntries.rows.filter(existing => {
+      // Skip if already processed (matched or created)
       if (processedEntryIds.has(existing.id)) return false;
+      
+      // Check if this entry is "similar" to any requested item
       for (const item of items) {
         if (areEntriesSimilar(existing, item)) {
           console.log(`⚠️ Skipping deletion of ${existing.id} - similar to requested item`);
-          return false;
+          return false; // Don't delete - it's similar to something being kept
         }
       }
+      
+      // No similarity found - safe to delete
       return true;
     });
-
+    
+    // Helper function to check similarity
     function areEntriesSimilar(dbEntry, requestedItem) {
+      // For clients, require matching on type when present
       if (dbEntry.client_id && requestedItem.clientId) {
-        const dbClientId = dbEntry.client_id;
+        const dbClient = dbEntry.client_id;
         const reqClient = parseInt(requestedItem.clientId, 10);
-        if (dbClientId !== reqClient) return false;
+        if (dbClient !== reqClient) return false;
 
+        // If requested item explicitly includes a scheduleTypeId, compare it
         if (requestedItem.type === 'client-with-type' && requestedItem.scheduleTypeId != null) {
           const reqType = parseInt(requestedItem.scheduleTypeId, 10);
           return (dbEntry.schedule_type_id != null && dbEntry.schedule_type_id === reqType);
         }
 
+        // If requested item is plain client (no type), consider similar only if DB entry has no type
         if (requestedItem.type === 'client') {
           return (dbEntry.schedule_type_id == null);
         }
 
+        // Otherwise, be conservative and don't treat as similar
         return false;
       }
 
+      // Same status (status entries) must match exact status id and with_employee
       if (dbEntry.status_id && requestedItem.id && requestedItem.type === 'status') {
         return dbEntry.status_id === parseInt(requestedItem.id, 10);
       }
 
       return false;
     }
-
+    
     if (entriesToDelete.length > 0) {
       const deleteIds = entriesToDelete.map(e => e.id);
+      
+      // 🔵 AUDIT: Get names for all deleted entries before deletion
+      for (const entry of entriesToDelete) {
+        const itemData = {
+          id: entry.id,
+          date: date,
+          employee_id: parsedEmployeeId
+        };
+        
+        if (entry.client_id) {
+          const clientName = await dbClient.query('SELECT name FROM clients WHERE id = $1', [entry.client_id]);
+          itemData.client_id = entry.client_id;
+          itemData.client_name = clientName.rows[0]?.name || `Client ${entry.client_id}`;
+          itemData.status_type = 'client';
+          
+          if (entry.schedule_type_id) {
+            const typeName = await dbClient.query('SELECT type_name FROM schedule_types WHERE id = $1', [entry.schedule_type_id]);
+            itemData.schedule_type_id = entry.schedule_type_id;
+            itemData.schedule_type_name = typeName.rows[0]?.type_name || `Type ${entry.schedule_type_id}`;
+          } else {
+            itemData.schedule_type_id = null;
+            itemData.schedule_type_name = null;
+          }
+        } else if (entry.status_id) {
+          const statusName = await dbClient.query('SELECT label FROM statuses WHERE id = $1', [entry.status_id]);
+          itemData.status_id = entry.status_id;
+          itemData.status_label = statusName.rows[0]?.label || `Status ${entry.status_id}`;
+          itemData.status_type = 'status';
+          
+          if (entry.with_employee_id) {
+            const withEmpName = await dbClient.query('SELECT name FROM employees WHERE id = $1', [entry.with_employee_id]);
+            itemData.with_employee_id = entry.with_employee_id;
+            itemData.with_employee_name = withEmpName.rows[0]?.name || `Employee ${entry.with_employee_id}`;
+          } else {
+            itemData.with_employee_id = null;
+            itemData.with_employee_name = null;
+          }
+        }
+        
+        removedItems.push(itemData);
+      }
+      
       await dbClient.query(
         `DELETE FROM employee_schedule WHERE id = ANY($1)`,
         [deleteIds]
       );
       console.log(`🗑️ Deleted ${deleteIds.length} truly orphaned entries:`, deleteIds);
+    }
 
-      // 🔎 AUDIT — track removed entries
-      removedEntries = entriesToDelete.map(e => ({
-        id: e.id,
-        employee_id: e.employee_id,
-        date: e.date,
-        status_id: e.status_id,
-        client_id: e.client_id,
-        schedule_type_id: e.schedule_type_id,
-        with_employee_id: e.with_employee_id
-      }));
+    // 🔵 AUDIT: Log the schedule changes if there were any creates or removes
+    if (createdItems.length > 0 || removedItems.length > 0) {
+      try {
+        // Get employee name for the log
+        const empResult = await dbClient.query('SELECT name FROM employees WHERE id = $1', [parsedEmployeeId]);
+        const employeeName = empResult.rows[0]?.name || `Employee ${parsedEmployeeId}`;
+        
+        await logAction({
+          userId: req.user.id,
+          userEmail: req.user.email,
+          action: 'CREATE',
+          tableName: 'employee_schedule',
+          recordId: `${parsedEmployeeId}:${date}`,
+          after: {
+            date: date,
+            employee_id: parsedEmployeeId,
+            employee_name: employeeName,
+            created_items: createdItems,
+            removed_items: removedItems,
+            created_count: createdItems.length,
+            removed_count: removedItems.length,
+            action_type: 'create',
+            created: createdItems,
+            removed: removedItems,
+            updated_types: null
+          }
+        });
+        console.log('✅ Audit log created for schedule changes');
+      } catch (auditErr) {
+        console.error('⚠️ Audit log failed:', auditErr);
+      }
     }
 
     await dbClient.query("COMMIT");
-
+    
     console.log("✅ Schedule saved - States preserved during edits");
-
-    // Enrich created/removed entries with names & status_type
-    async function enrichItems(itemsArr) {
-      return Promise.all((itemsArr || []).map(async (it) => {
-        const names = await getDetailedLogData(
-          it.employee_id,
-          it.client_id,
-          it.status_id,
-          it.schedule_type_id,
-          it.with_employee_id
-        );
-        return {
-          ...it,
-          employee_name: names.employee_name || (it.employee_id ? `Employee ${it.employee_id}` : null),
-          with_employee_name: names.with_employee_name || (it.with_employee_id ? `Employee ${it.with_employee_id}` : null),
-          client_name: names.client_name || (it.client_id ? `Client ${it.client_id}` : null),
-          status_label: names.status_label || (it.status_id ? `Status ${it.status_id}` : null),
-          schedule_type_name: names.schedule_type_name || (it.schedule_type_id ? `Type ${it.schedule_type_id}` : null),
-          status_type: it.client_id ? 'client' : (it.status_id ? 'status' : null)
-        };
-      }));
-    }
-
-    const createdWithNames = await enrichItems(createdEntries);
-    const removedWithNames = await enrichItems(removedEntries);
-
-    // Determine action type
-    let actionType = 'UPDATE';
-    if (createdEntries.length > 0 && removedEntries.length === 0) {
-      actionType = 'CREATE';
-    } else if (removedEntries.length > 0 && createdEntries.length === 0) {
-      actionType = 'DELETE';
-    }
-
-    const details = await getDetailedLogData(parsedEmployeeId, null, null, null, null);
-
-    await logAction({
-      userId: req.user.id,
-      userEmail: req.user.email,
-      action: actionType,
-      tableName: "employee_schedule",
-      recordId: `${parsedEmployeeId}:${date}`,
-      after: {
-        employee_id: parsedEmployeeId,
-        employee_name: details.employee_name || `Employee ${parsedEmployeeId}`,
-        date,
-        action_type: actionType.toLowerCase(),
-        created_count: createdEntries.length,
-        removed_count: removedEntries.length,
-
-        // ✅ Provide both to satisfy old & new UI
-        created: createdWithNames,
-        removed: removedWithNames,
-        created_items: createdWithNames,
-        removed_items: removedWithNames,
-
-        updated_types: updatedTypeChanges.length > 0 ? updatedTypeChanges : null
-      }
-    });
-
-    res.json({
+    
+    res.json({ 
       success: true,
       debug: {
         processedEntries: processedEntryIds.size,
         deletedEntries: entriesToDelete.length,
-        statesPreserved: existingEntries.rows.filter(e =>
+        statesPreserved: existingEntries.rows.filter(e => 
           e.schedule_state_id && processedEntryIds.has(e.id)
         ).length
       }
@@ -2735,7 +2781,7 @@ app.post("/api/schedule", requireSession, async (req, res) => {
 
 app.get("/api/relationships", requireSession, async (req, res) => {
   try {
-    const { status } = req.query;
+    const { status } = req.query; 
 
     if (!status) {
       return res.status(400).json({ error: "Status query parameter is required" });
@@ -2753,6 +2799,7 @@ app.get("/api/relationships", requireSession, async (req, res) => {
       FROM employee_schedule es
       JOIN employees e ON es.employee_id = e.id
       JOIN statuses s ON es.status_id = s.id
+      -- join linked employees
       LEFT JOIN employee_relationships er
         ON er.employee_id = e.id
         AND er.date = es.date
@@ -2780,85 +2827,46 @@ app.get('/api/schedule-types', async (req, res) => {
   }
 });
 
-// Get single employee by ID (NEW ENDPOINT)
-app.get('/api/employees/:id', requireSession, async (req, res) => {
-  try {
-    const { id } = req.params;
-    const result = await query('SELECT * FROM employees WHERE id = $1', [id]);
-    
-    if (result.rows.length === 0) {
-      return res.status(404).json({ error: 'Employee not found' });
-    }
-    
-    res.json(result.rows[0]);
-  } catch (err) {
-    console.error('Error fetching employee:', err);
-    res.status(500).json({ error: 'Failed to fetch employee' });
-  }
-});
-
-// Get single client by ID (NEW ENDPOINT)
-app.get('/api/clients/:id', requireSession, async (req, res) => {
-  try {
-    const { id } = req.params;
-    const result = await query('SELECT * FROM clients WHERE id = $1', [id]);
-    
-    if (result.rows.length === 0) {
-      return res.status(404).json({ error: 'Client not found' });
-    }
-    
-    res.json(result.rows[0]);
-  } catch (err) {
-    console.error('Error fetching client:', err);
-    res.status(500).json({ error: 'Failed to fetch client' });
-  }
-});
-
-// Get single schedule type by ID (NEW ENDPOINT)
-app.get('/api/schedule-types/:id', requireSession, async (req, res) => {
-  try {
-    const { id } = req.params;
-    const result = await query('SELECT * FROM schedule_types WHERE id = $1', [id]);
-    
-    if (result.rows.length === 0) {
-      return res.status(404).json({ error: 'Schedule type not found' });
-    }
-    
-    res.json(result.rows[0]);
-  } catch (err) {
-    console.error('Error fetching schedule type:', err);
-    res.status(500).json({ error: 'Failed to fetch schedule type' });
-  }
-});
-
-app.get('/api/logs', requireSession, async (req, res) => {
-  try {
-    const { limit = 200 } = req.query;
-
-    const result = await pool.query(
-      `SELECT 
-         id,
-         user_email,
-         action,
-         table_name,
-         record_id,
-         before,
-         after,
-         created_at
-       FROM audit_logs
-       ORDER BY created_at DESC
-       LIMIT $1`,
-      [Math.min(parseInt(limit, 10) || 200, 1000)]
-    );
-
-    res.json({ success: true, logs: result.rows });
-  } catch (err) {
-    console.error('❌ Error fetching logs:', err);
-    res.status(500).json({ success: false, error: 'Failed to fetch logs' });
-  }
-});
 
 app.use('/api', emailRoutes);
+
+// Get audit logs with pagination
+app.get('/api/logs', requireSession, async (req, res) => {
+  try {
+    const limit = parseInt(req.query.limit) || 50;
+    const offset = parseInt(req.query.offset) || 0;
+
+    // Fetch logs ordered by most recent first
+    const result = await pool.query(
+      `SELECT * FROM audit_logs 
+       ORDER BY created_at DESC 
+       LIMIT $1 OFFSET $2`,
+      [limit, offset]
+    );
+
+    // Get total count
+    const countResult = await pool.query('SELECT COUNT(*) as total FROM audit_logs');
+    const total = parseInt(countResult.rows[0].total);
+
+    res.json({
+      success: true,
+      logs: result.rows,
+      pagination: {
+        total,
+        limit,
+        offset,
+        hasMore: offset + limit < total
+      }
+    });
+  } catch (err) {
+    console.error('Error fetching logs:', err);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch logs',
+      logs: []
+    });
+  }
+});
 
 // Test endpoint
 app.get('/api/test', (req, res) => {

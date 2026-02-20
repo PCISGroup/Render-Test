@@ -1,20 +1,44 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
-
 <head>
-  <meta charset="UTF-8" />
-  <link rel="icon" type="image/svg+xml" href="/electra-favicon.png" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Electra Scheduler</title>
-
-  <!-- PWA manifest -->
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  
+  <!-- PWA Basic -->
   <link rel="manifest" href="/manifest.json">
+  
+  <!-- iOS Specific -->
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Electra Scheduler">
+  <link rel="apple-touch-icon" href="/icons/icon-192.png">
+  <link rel="apple-touch-icon" sizes="152x152" href="/icons/icon-192.png">
+  <link rel="apple-touch-icon" sizes="180x180" href="/icons/icon-192.png">
+  <link rel="apple-touch-icon" sizes="167x167" href="/icons/icon-192.png">
+  
+  <!-- Android/Chrome Specific -->
   <meta name="theme-color" content="#2563eb">
+  <meta name="mobile-web-app-capable" content="yes">
+  
+  <!-- Startup images for iOS (optional but nice) -->
+  <link rel="apple-touch-startup-image" href="/icons/icon-512.png">
+  
+  <title>Scheduler App</title>
 </head>
-
 <body>
   <div id="root"></div>
+  
   <script type="module" src="/src/main.jsx"></script>
+  
+  <!-- Your service worker registration -->
+  <script>
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('/sw.js')
+          .then(reg => console.log('Service Worker registered.', reg))
+          .catch(err => console.error('Service Worker registration failed:', err));
+      });
+    }
+  </script>
 </body>
-
 </html>

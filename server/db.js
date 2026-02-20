@@ -113,6 +113,21 @@ export async function initDB() {
       );
     `);
 
+
+    // Add user_id column if it doesn't exist
+    await client.query(`
+  DO $$
+  BEGIN
+    IF NOT EXISTS (
+      SELECT 1 FROM information_schema.columns 
+      WHERE table_name = 'employees' AND column_name = 'user_id'
+    ) THEN
+      ALTER TABLE employees ADD COLUMN user_id UUID REFERENCES users(id) ON DELETE SET NULL;
+      CREATE INDEX idx_employees_user_id ON employees(user_id);
+    END IF;
+  END $$;
+`);
+
     // ========================
     // 4. CLIENTS TABLE (with location_id)
     // ========================
@@ -177,9 +192,9 @@ export async function initDB() {
     `);
 
     // ========================
-// 6c. CANCELLATION_REASONS TABLE 
-// ========================
-await client.query(`
+    // 6c. CANCELLATION_REASONS TABLE 
+    // ========================
+    await client.query(`
   CREATE TABLE IF NOT EXISTS cancellation_reasons (
     id SERIAL PRIMARY KEY,
     reason TEXT NOT NULL,
@@ -188,8 +203,8 @@ await client.query(`
   );
 `);
 
-// Add cancellation_reason_id to employee_schedule table
-await client.query(`
+    // Add cancellation_reason_id to employee_schedule table
+    await client.query(`
   DO $$
   BEGIN
     IF NOT EXISTS (
@@ -203,8 +218,8 @@ await client.query(`
   END $$;
 `);
 
-// Create index for cancellation reasons
-await client.query(`
+    // Create index for cancellation reasons
+    await client.query(`
   CREATE INDEX IF NOT EXISTS idx_schedule_cancellation 
   ON employee_schedule(cancellation_reason_id);
 `);
@@ -249,7 +264,7 @@ await client.query(`
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
   );
 `);
- 
+
     // Add schedule_type_id column if it doesn't exist
     await client.query(`
       DO $$
@@ -323,10 +338,10 @@ await client.query(`
   );
 `);
 
-/* ========================
--- AUDIT LOGS TABLE
- ======================== */
-await client.query(`
+    /* ========================
+    -- AUDIT LOGS TABLE
+     ======================== */
+    await client.query(`
 CREATE TABLE IF NOT EXISTS audit_logs (
   id SERIAL PRIMARY KEY,
 
@@ -351,12 +366,73 @@ CREATE TABLE IF NOT EXISTS audit_logs (
 );
 `);
 
-await client.query(`CREATE INDEX IF NOT EXISTS idx_audit_created_at ON audit_logs (created_at DESC);`);
-await client.query(`CREATE INDEX IF NOT EXISTS idx_audit_user_id ON audit_logs (user_id);`);
-await client.query(`CREATE INDEX IF NOT EXISTS idx_audit_user_email ON audit_logs (user_email);`);
-await client.query(`CREATE INDEX IF NOT EXISTS idx_audit_table_name ON audit_logs (table_name);`);
-await client.query(`CREATE INDEX IF NOT EXISTS idx_audit_action ON audit_logs (action);`);
-await client.query(`CREATE INDEX IF NOT EXISTS idx_audit_table_record ON audit_logs (table_name, record_id);`);
+    // ========================
+    // USERS TABLE (for authentication and role management)
+    // ========================
+    await client.query(`
+  CREATE TABLE IF NOT EXISTS users (
+    id UUID PRIMARY KEY,
+    email VARCHAR(255) UNIQUE NOT NULL,
+    role VARCHAR(50) NOT NULL DEFAULT 'employee'
+  );
+`);
+
+    // Ensure role default aligns with current roles
+    await client.query(`
+  ALTER TABLE users
+  ALTER COLUMN role SET DEFAULT 'employee';
+`);
+
+    // Normalize legacy role value if present
+    await client.query(`
+  UPDATE users
+  SET role = 'employee'
+  WHERE role = 'engineer';
+`);
+
+    // Add last_login if missing
+    await client.query(`
+  DO $$
+  BEGIN
+    IF NOT EXISTS (
+      SELECT 1 FROM information_schema.columns 
+      WHERE table_name = 'users' AND column_name = 'last_login'
+    ) THEN
+      ALTER TABLE users ADD COLUMN last_login TIMESTAMP;
+    END IF;
+  END $$;
+`);
+
+    // Add created_at if missing
+    await client.query(`
+  DO $$
+  BEGIN
+    IF NOT EXISTS (
+      SELECT 1 FROM information_schema.columns 
+      WHERE table_name = 'users' AND column_name = 'created_at'
+    ) THEN
+      ALTER TABLE users ADD COLUMN created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
+      
+      -- Update existing rows to have a created_at value
+      UPDATE users SET created_at = CURRENT_TIMESTAMP WHERE created_at IS NULL;
+    END IF;
+  END $$;
+`);
+
+    // Indexes
+    await client.query(`
+  CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
+`);
+    await client.query(`
+  CREATE INDEX IF NOT EXISTS idx_users_role ON users(role);
+`);
+
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_audit_created_at ON audit_logs (created_at DESC);`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_audit_user_id ON audit_logs (user_id);`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_audit_user_email ON audit_logs (user_email);`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_audit_table_name ON audit_logs (table_name);`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_audit_action ON audit_logs (action);`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_audit_table_record ON audit_logs (table_name, record_id);`);
     // ========================
     // CREATE INDEXES FOR ALL TABLES
     // ========================
@@ -468,7 +544,7 @@ await client.query(`CREATE INDEX IF NOT EXISTS idx_audit_table_record ON audit_l
       CREATE INDEX IF NOT EXISTS idx_rel_date 
       ON employee_relationships(date);
     `);
-        // Schedule Types index
+    // Schedule Types index
     await client.query(`
       CREATE INDEX IF NOT EXISTS idx_schedule_types 
       ON schedule_types(type_name);

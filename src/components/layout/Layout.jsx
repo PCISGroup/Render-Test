@@ -1,16 +1,20 @@
-import React, { useState, useCallback } from "react";
+import React, { useState, useCallback, useEffect } from "react";
 import { Link, useLocation, Outlet, useNavigate } from "react-router-dom";
 import { Users, Calendar, BarChart3, Menu, Activity, LogOut, ClipboardList } from "lucide-react";
 import { supabase } from '../../lib/supabaseClient';
 import "./Layout.css";
 import icon from '/electra-favicon.png';
 
-const navigationItems = [
+const adminNavigationItems = [
   { title: "Schedule", url: "/schedule", icon: Calendar },
   { title: "Employees", url: "/employees", icon: Users },
   { title: "Analytics", url: "/analytics", icon: BarChart3 },
   { title: "Status", url: "/status", icon: Activity },
   { title: "Logs", url: "/logs", icon: ClipboardList },
+];
+
+const employeeNavigationItems = [
+  { title: "My Schedule", url: "/employee", icon: Calendar }
 ];
 
 export default function Layout() {
@@ -19,9 +23,23 @@ export default function Layout() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
   const [logoutLoading, setLogoutLoading] = useState(false);
+  const [userRole, setUserRole] = useState(() => localStorage.getItem('userRole'));
 
   const closeSidebar = useCallback(() => setSidebarOpen(false), []);
   const toggleSidebar = useCallback(() => setSidebarOpen(prev => !prev), []);
+
+  useEffect(() => {
+    const handleStorage = () => {
+      setUserRole(localStorage.getItem('userRole'));
+    };
+
+    window.addEventListener('storage', handleStorage);
+    return () => window.removeEventListener('storage', handleStorage);
+  }, []);
+
+  useEffect(() => {
+    setUserRole(localStorage.getItem('userRole'));
+  }, [location.pathname]);
 
   // Supabase logout handler
   const handleLogout = useCallback(async () => {
@@ -39,6 +57,7 @@ export default function Layout() {
 
       // Clear any local storage data
       localStorage.removeItem('supabase.auth.token');
+      localStorage.removeItem('userRole');
 
       // Redirect to login page
       navigate('/login');
@@ -85,7 +104,7 @@ export default function Layout() {
           <div className="sidebar-group">
             <div className="sidebar-label">Navigation</div>
             <div className="sidebar-menu">
-              {navigationItems.map((item) => {
+              {(userRole === 'employee' ? employeeNavigationItems : adminNavigationItems).map((item) => {
                 const Icon = item.icon;
                 const isActive = location.pathname === item.url;
 

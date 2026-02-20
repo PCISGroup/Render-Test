@@ -147,21 +147,15 @@ const ScheduleTableCell = ({
 
     // Then save the cancellation reason to backend
     const result = await saveCancellationReason(statusId, reason, note);
-    console.log('🔁 saveCancellationReason FULL RESULT:', JSON.stringify(result, null, 2)); // DEBUG
-
-    // DEBUG: Check what the backend actually returned
-    if (result && result.cancelledAt) {
-      console.log('✅ Backend returned cancelledAt:', result.cancelledAt);
-    } else {
-      console.log('❌ Backend DID NOT return cancelledAt! Result:', result);
-    }
-
-    // Use the cancelledAt timestamp from backend response OR create one
-    const cancelledAt = result.cancelledAt || new Date().toISOString();
-    console.log('📅 Using cancelledAt:', cancelledAt);
+    console.log('🔁 saveCancellationReason FULL RESULT:', JSON.stringify(result, null, 2));
 
     // Immediately persist reason in local state and notify parent
     const baseId = getBaseStatusId(statusId);
+    
+    // Set current timestamp immediately so it displays right away
+    // Backend will update it with the actual DB timestamp after refresh
+    const tempCancelledAt = new Date().toISOString();
+    
     setLocalStates(prev => ({
       ...prev,
       [baseId]: {
@@ -169,7 +163,7 @@ const ScheduleTableCell = ({
         state: 'cancelled',
         reason: reason || '',
         note: note || '',
-        cancelledAt: cancelledAt // Make sure this is set
+        cancelledAt: tempCancelledAt
       }
     }));
 
@@ -179,24 +173,25 @@ const ScheduleTableCell = ({
         state: 'cancelled',
         reason: reason || '',
         note: note || '',
-        cancelledAt: cancelledAt // Make sure this is set
+        cancelledAt: tempCancelledAt
       });
     }
 
+    // Close modal first for better UX
+    setShowCancellationModal(null);
+    setCancellationModalState({ reason: '', note: '' });
+    setStateDropdownId(null);
 
-      // Refresh schedules/states from backend to ensure parent has latest cancellation info
-      if (refreshSchedules) {
-        try {
-          await refreshSchedules();
-          console.log('🔄 refreshSchedules triggered after cancellation save');
-        } catch (rsErr) {
-          console.warn('⚠️ refreshSchedules failed:', rsErr);
-        }
+    // Refresh schedules/states from backend to get the correct cancelledAt timestamp
+    if (refreshSchedules) {
+      try {
+        await refreshSchedules();
+        console.log('🔄 refreshSchedules triggered after cancellation save');
+      } catch (rsErr) {
+        console.warn('⚠️ refreshSchedules failed:', rsErr);
       }
+    }
 
-      setShowCancellationModal(null);
-      setCancellationModalState({ reason: '', note: '' });
-      setStateDropdownId(null);
     } catch (error) {
       console.error('Failed to save cancellation:', error);
     }
@@ -782,6 +777,37 @@ const saveState = useCallback(async (statusId, stateName, postponedDate = null, 
     return map;
   }, [selectedStatuses]);
 
+  // Replace all typed versions of a client with the base client
+  const replaceTypedWithBaseClient = (empId, date, clientId) => {
+    // Find all typed versions of this client that are selected
+    const typedVersions = selectedStatuses.filter(statusId =>
+      typeof statusId === 'string' && statusId.startsWith(clientId + '_type-')
+    );
+
+    // Remove all typed versions
+    typedVersions.forEach(typedId => {
+      toggleStatus(empId, date, typedId);
+    });
+
+    // Add the base client (without type)
+    if (!selectedStatuses.includes(clientId)) {
+      toggleStatus(empId, date, clientId);
+    }
+  };
+
+  // Replace base client with a typed version
+  const replaceBaseClientWithType = (empId, date, baseClientId, typedClientId) => {
+    // Remove the base client
+    if (selectedStatuses.includes(baseClientId)) {
+      toggleStatus(empId, date, baseClientId);
+    }
+
+    // Add the typed version
+    if (!selectedStatuses.includes(typedClientId)) {
+      toggleStatus(empId, date, typedClientId);
+    }
+  };
+
   return (
     <td
       ref={cellRef}
@@ -796,7 +822,7 @@ const saveState = useCallback(async (statusId, stateName, postponedDate = null, 
               const state = localStates[baseId];
               const hasState = !!state;
               const isCancelled = state?.state === 'cancelled';
-              const hasCancellationReason = isCancelled && state.reason;
+              const hasCancellationReason = isCancelled;
 
               // Determine display text: client name and joined type names (if any)
               const client = statusConfigs.find(s => s.id === baseId);
@@ -983,6 +1009,8 @@ const saveState = useCallback(async (statusId, stateName, postponedDate = null, 
               selectedStatuses={selectedStatuses}
               statusConfigs={statusConfigs}
               toggleStatus={toggleStatus}
+              replaceTypedWithBaseClient={replaceTypedWithBaseClient}
+              replaceBaseClientWithType={replaceBaseClientWithType}
               saving={saving}
               onClose={() => setActiveDropdown(null)}
               activeDropdown={activeDropdown}

@@ -22,16 +22,16 @@ import {
   Printer
 } from 'lucide-react';
 
-const API_BASE_URL = import.meta.env.VITE_API_URL;
+const API_BASE_URL = import.meta.env.VITE_API_URL || "http://localhost:5001";
 
 // 🔵 Helper function to safely parse JSON
 const safeParse = (str) => {
   if (!str) return {};
   if (typeof str === 'object') return str;
-
+  
   try {
     const parsed = JSON.parse(str);
-
+    
     // Check if after/before contain JSON strings themselves
     if (parsed.after && typeof parsed.after === 'string') {
       try {
@@ -40,7 +40,7 @@ const safeParse = (str) => {
         // Keep as is if nested parse fails
       }
     }
-
+    
     if (parsed.before && typeof parsed.before === 'string') {
       try {
         parsed.before = JSON.parse(parsed.before);
@@ -48,7 +48,7 @@ const safeParse = (str) => {
         // Keep as is if nested parse fails
       }
     }
-
+    
     return parsed;
   } catch {
     // Try to fix common JSON issues
@@ -59,7 +59,7 @@ const safeParse = (str) => {
         .replace(/,"/g, ', "')
         .replace(/":/g, '": ');
       const parsed = JSON.parse(fixedStr);
-
+      
       // Apply same nested parsing logic
       if (parsed.after && typeof parsed.after === 'string') {
         try {
@@ -68,7 +68,7 @@ const safeParse = (str) => {
           // Keep as is
         }
       }
-
+      
       if (parsed.before && typeof parsed.before === 'string') {
         try {
           parsed.before = JSON.parse(parsed.before);
@@ -76,7 +76,7 @@ const safeParse = (str) => {
           // Keep as is
         }
       }
-
+      
       return parsed;
     } catch {
       return {};
@@ -87,8 +87,8 @@ const safeParse = (str) => {
 // 🔵 Helper to extract employee ID from record_id
 const extractEmployeeIdFromRecordId = (recordId) => {
   if (!recordId) return null;
-  // Format: "2:2026-02-06" or "2:2026-02-05:client-64"
-  const parts = recordId.split(':');
+  // Handle both formats: "2:2026-02-06" and "2_2026-02-19_client-105" 
+  const parts = recordId.split(/[:_]/);
   if (parts.length > 0) {
     const id = parseInt(parts[0], 10);
     return isNaN(id) ? null : id;
@@ -99,8 +99,8 @@ const extractEmployeeIdFromRecordId = (recordId) => {
 // 🔵 Helper to extract client ID from record_id
 const extractClientIdFromRecordId = (recordId) => {
   if (!recordId) return null;
-  // Format: "2:2026-02-05:client-64"
-  const parts = recordId.split(':');
+  // Handle formats: "2:2026-02-05:client-64" or "2_2026-02-19_client-105"
+  const parts = recordId.split(/[:_]/);
   for (const part of parts) {
     if (part.startsWith('client-')) {
       const id = parseInt(part.replace('client-', ''), 10);
@@ -114,25 +114,25 @@ const extractClientIdFromRecordId = (recordId) => {
 const extractStateName = (log) => {
   const after = safeParse(log.after);
   const before = safeParse(log.before);
-
+  
   // Check direct state_name
   if (after?.state_name) return after.state_name;
   if (before?.state_name) return before.state_name;
-
+  
   // Check nested state_name
   if (after?.after?.state_name) return after.after.state_name;
   if (before?.after?.state_name) return before.after.state_name;
-
+  
   // Check action_type
   if (after?.action_type) {
-    switch (after.action_type) {
+    switch(after.action_type) {
       case 'completed': return 'completed';
       case 'cancelled': return 'cancelled';
       case 'postponed': return 'postponed';
       default: return null;
     }
   }
-
+  
   return null;
 };
 
@@ -141,10 +141,10 @@ const fetchNamesFromAPI = async (ids, type, token) => {
   try {
     const results = {};
     const promises = [];
-
+    
     for (const id of ids) {
       if (!id) continue;
-
+      
       let endpoint = '';
       switch (type) {
         case 'employee':
@@ -159,7 +159,7 @@ const fetchNamesFromAPI = async (ids, type, token) => {
         default:
           continue;
       }
-
+      
       promises.push(
         fetch(`${API_BASE_URL}${endpoint}`, {
           headers: {
@@ -178,7 +178,7 @@ const fetchNamesFromAPI = async (ids, type, token) => {
         })
       );
     }
-
+    
     await Promise.allSettled(promises);
     return results;
   } catch (error) {
@@ -201,61 +201,50 @@ const formatLogMessage = (log, nameCache = {}) => {
   console.log("Record ID:", record_id);
   console.log("Raw after field:", log.after);
   console.log("Raw before field:", log.before);
-
+  
   const after = safeParse(log.after);
   const before = safeParse(log.before);
-
+  
   console.log("Parsed after:", after);
   console.log("Parsed before:", before);
-
-  // 🚨 Check for completed in every possible location
-  if (table_name === "employee_schedule") {
-    console.log("🔍 Searching for 'completed' in after field:");
-    console.log("- after string:", JSON.stringify(after));
-    console.log("- after includes 'completed'?", JSON.stringify(after).includes('completed'));
-    console.log("- after.state_name:", after?.state_name);
-    console.log("- after.status:", after?.status);
-    console.log("- after.action_type:", after?.action_type);
-    console.log("- after.is_completed:", after?.is_completed);
-    console.log("- after.completed:", after?.completed);
-
-    console.log("🔍 Searching for 'completed' in before field:");
-    console.log("- before string:", JSON.stringify(before));
-    console.log("- before includes 'completed'?", JSON.stringify(before).includes('completed'));
-    console.log("- before.state_name:", before?.state_name);
-    console.log("- before.status:", before?.status);
-    console.log("- before.action_type:", before?.action_type);
-  }
+  console.log("Name cache keys available:", Object.keys(nameCache).slice(0, 20));
   console.log("=== DEBUG LOG END ===");
 
   const fmt = (d) => {
     try {
       if (!d) return 'Unknown Date';
-
+      
       // Handle string dates
       if (typeof d === 'string') {
         // Try ISO format first
         if (d.includes('T')) {
-          return format(parseISO(d), "MMM d, yyyy");
+          const parsed = parseISO(d);
+          if (!isNaN(parsed.getTime())) {
+            return format(parsed, "MMM d, yyyy");
+          }
+        }
+        // Try YYYY-MM-DD format
+        if (d.match(/^\d{4}-\d{2}-\d{2}$/)) {
+          const parsed = new Date(d + 'T00:00:00');
+          if (!isNaN(parsed.getTime())) {
+            return format(parsed, "MMM d, yyyy");
+          }
         }
         // Try parsing as regular date string
         const date = new Date(d);
         if (!isNaN(date.getTime())) {
           return format(date, "MMM d, yyyy");
         }
-        // Try YYYY-MM-DD format
-        if (d.match(/^\d{4}-\d{2}-\d{2}$/)) {
-          return format(new Date(d), "MMM d, yyyy");
-        }
       }
-
+      
       // Handle Date objects
-      if (d instanceof Date) {
+      if (d instanceof Date && !isNaN(d.getTime())) {
         return format(d, "MMM d, yyyy");
       }
-
+      
       return 'Unknown Date';
-    } catch {
+    } catch (error) {
+      console.error('Date formatting error:', error, 'for date:', d);
       return 'Unknown Date';
     }
   };
@@ -264,9 +253,16 @@ const formatLogMessage = (log, nameCache = {}) => {
 
   // Helper function to get name from cache or fallback
   const getName = (id, type, fallbackPrefix = 'Unknown') => {
-    if (!id) return `${fallbackPrefix}`;
+    if (!id) return null;
     const cacheKey = `${type}_${id}`;
-    return nameCache[cacheKey] || `${fallbackPrefix} ${id}`;
+    const cachedName = nameCache[cacheKey];
+    if (cachedName) {
+      console.log(`✅ Found cached name for ${cacheKey}: ${cachedName}`);
+      return cachedName;
+    }
+    
+    console.warn(`❌ No name found in cache for ${cacheKey}`);
+    return null;
   };
 
   /* ------------------------------------------------------
@@ -274,61 +270,98 @@ const formatLogMessage = (log, nameCache = {}) => {
      ------------------------------------------------------ */
   if (table_name === "employee_schedule") {
     // Try to get employee ID from multiple sources
-    const employeeId = after?.employee_id ||
-      before?.employee_id ||
-      extractEmployeeIdFromRecordId(record_id);
-
-    // Get employee name
-    const empName = employeeId ? getName(employeeId, 'employee', 'Employee') : 'Employee';
-
+    const employeeId = after?.employee_id || 
+                      before?.employee_id || 
+                      extractEmployeeIdFromRecordId(record_id);
+    
+    console.log('👤 Employee extraction:', { employeeId, record_id, after_emp_id: after?.employee_id, after_emp_name: after?.employee_name });
+    
+    // Get employee name - PRIORITIZE THE NAME FROM LOG DATA (most important!)
+    const empName = after?.employee_name || 
+                   before?.employee_name || 
+                   (employeeId ? (getName(employeeId, 'employee') || `Employee ${employeeId}`) : 'Unknown Employee');
+    
+    console.log('✅ Using employee name:', empName);
+    
     // Get with employee name
     const withEmpId = after?.with_employee_id || before?.with_employee_id;
-    const withEmpName = withEmpId ? getName(withEmpId, 'employee', 'Employee') : null;
+    const withEmpName = after?.with_employee_name || 
+                       before?.with_employee_name || 
+                       (withEmpId ? getName(withEmpId, 'employee', 'Employee') : null);
     const withEmp = withEmpName ? ` with ${b(withEmpName)}` : '';
 
-    // Get date from multiple sources
-    const date = after?.date || before?.date ||
-      (record_id ? record_id.split(':')[1] : null);
-    const formattedDate = date ? fmt(date) : '';
+    // Get date from multiple sources - handle both string formats
+    let date = after?.date || before?.date;
+    
+    // Try extracting from record_id if not found in data
+    if (!date && record_id) {
+      // Handle format "2:2026-02-06" or "2_2026-02-19_client-105"
+      const parts = record_id.split(/[:_]/);
+      if (parts.length >= 2) {
+        // Second part should be the date (YYYY-MM-DD format)
+        const potentialDate = parts[1];
+        if (potentialDate && potentialDate.match(/^\d{4}-\d{2}-\d{2}$/)) {
+          date = potentialDate;
+        }
+      }
+    }
+    
+    const formattedDate = date ? fmt(date) : 'Unknown Date';
+    console.log('📅 Date extraction:', { date, formattedDate, record_id });
 
     // Determine item type and label
     let itemLabel = "";
     let itemType = "";
-
+    
     // Try to get client ID from multiple sources
-    const clientId = after?.client_id ||
-      before?.client_id ||
-      extractClientIdFromRecordId(record_id);
-
+    const clientId = after?.client_id || 
+                    before?.client_id || 
+                    extractClientIdFromRecordId(record_id);
+    
+    console.log('🏭 Client extraction:', { clientId, record_id, after_client_id: after?.client_id, after_client_name: after?.client_name });
+    
     if (clientId) {
       itemType = "client";
-      const clientName = getName(clientId, 'client', 'Client');
-
+      // PRIORITIZE THE NAME FROM LOG DATA - use status_details if available since it has full details
+      const statusDetails = after?.status_details || before?.status_details;
+      const clientName = after?.client_name || 
+                        before?.client_name || 
+                        (statusDetails ? statusDetails : null) ||
+                        (clientId ? (getName(clientId, 'client') || `Client ${clientId}`) : null);
+      
       // Try to get schedule type
       const scheduleTypeId = after?.schedule_type_id || before?.schedule_type_id;
-      const scheduleTypeName = scheduleTypeId ?
-        getName(scheduleTypeId, 'schedule-type', 'Type') : '';
-
+      const scheduleTypeName = after?.schedule_type_name || 
+                              before?.schedule_type_name || 
+                              (scheduleTypeId ? (getName(scheduleTypeId, 'schedule-type') || null) : null);
+      
       itemLabel = `${b(clientName)}${scheduleTypeName ? ` (${scheduleTypeName})` : ''}`;
-    }
+      console.log('✅ Client item label:', itemLabel);
+    } 
     // Try to get status ID
     else if (after?.status_id || before?.status_id) {
       itemType = "status";
       const statusId = after?.status_id || before?.status_id;
-      const statusName = getName(statusId, 'status', 'Status');
+      // PRIORITIZE THE NAME FROM LOG DATA
+      const statusLabel = after?.status_label || before?.status_label;
+      const statusName = statusLabel ||
+                        (statusId ? (getName(statusId, 'status') || `Status ${statusId}`) : null);
       itemLabel = b(statusName);
+      console.log('✅ Status item label:', itemLabel);
     }
     // Fallback for "Schedule Updated" logs
     else {
       itemType = "unknown";
-      itemLabel = "schedule";
+      // Use status_details if available, otherwise fallback to "schedule"
+      const statusDetails = after?.status_details || before?.status_details || 'schedule';
+      itemLabel = b(statusDetails);
     }
 
     // 🔴 SIMPLIFIED BUT COMPREHENSIVE COMPLETED DETECTION
     // Check every possible location for "completed"
     let isCompletedDetected = false;
     let detectionMethod = "none";
-
+    
     // Method 1: Check parsed fields
     if (after?.state_name === "completed" || before?.state_name === "completed") {
       isCompletedDetected = true;
@@ -343,23 +376,23 @@ const formatLogMessage = (log, nameCache = {}) => {
       isCompletedDetected = true;
       detectionMethod = "boolean_flag";
     }
-
+    
     // Method 2: Check raw JSON strings (case insensitive)
     if (!isCompletedDetected) {
       const afterStr = JSON.stringify(log.after || '').toLowerCase();
       const beforeStr = JSON.stringify(log.before || '').toLowerCase();
-
+      
       if (afterStr.includes('completed') || beforeStr.includes('completed')) {
         isCompletedDetected = true;
         detectionMethod = "string_search";
-
+        
         // Log what we found
         console.log("Found 'completed' in string!");
         console.log("After contains 'completed':", afterStr.includes('completed'));
         console.log("Before contains 'completed':", beforeStr.includes('completed'));
       }
     }
-
+    
     // Method 3: Check if this is a status change to completed
     if (!isCompletedDetected && before?.status && after?.status) {
       if (before.status !== "completed" && after.status === "completed") {
@@ -367,11 +400,11 @@ const formatLogMessage = (log, nameCache = {}) => {
         detectionMethod = "status_change";
       }
     }
-
+    
     console.log(`Completed detection result: ${isCompletedDetected} (method: ${detectionMethod})`);
 
     // 🔴 SIMPLIFIED CANCELLED DETECTION
-    const isCancelledDetected =
+    const isCancelledDetected = 
       after?.state_name === "cancelled" || before?.state_name === "cancelled" ||
       after?.status === "cancelled" || before?.status === "cancelled" ||
       after?.action_type === "cancelled" || before?.action_type === "cancelled" ||
@@ -380,14 +413,14 @@ const formatLogMessage = (log, nameCache = {}) => {
       JSON.stringify(log.after || '').toLowerCase().includes('cancelled') ||
       JSON.stringify(log.before || '').toLowerCase().includes('cancelled');
 
-    // 🔴 SIMPLIFIED POSTPONED DETECTION
-    const postponedDate = after?.postponedDate ||
-      after?.postponed_date ||
-      before?.postponedDate ||
-      before?.postponed_date;
-    const isTBA = after?.isTBA || before?.isTBA || false;
-
-    const isPostponedDetected =
+    // 🔴 SIMPLIFIED POSTPONED DETECTION - handle both camelCase and snake_case
+    const postponedDate = after?.postponedDate || 
+                         after?.postponed_date || 
+                         before?.postponedDate || 
+                         before?.postponed_date;
+    const isTBA = after?.isTBA || after?.is_tba || before?.isTBA || before?.is_tba || false;
+    
+    const isPostponedDetected = 
       after?.state_name === "postponed" || before?.state_name === "postponed" ||
       after?.status === "postponed" || before?.status === "postponed" ||
       after?.action_type === "postponed" || before?.action_type === "postponed" ||
@@ -396,6 +429,15 @@ const formatLogMessage = (log, nameCache = {}) => {
       JSON.stringify(log.before || '').toLowerCase().includes('postponed');
 
     const cancellationReason = after?.reason || before?.reason;
+    
+    console.log('🔍 State detection:', { 
+      isCancelledDetected, 
+      isPostponedDetected, 
+      postponedDate, 
+      isTBA, 
+      cancellationReason,
+      state_name: after?.state_name || before?.state_name 
+    });
 
     // 1. ✅ COMPLETED - Highest priority
     if (isCompletedDetected) {
@@ -414,24 +456,29 @@ const formatLogMessage = (log, nameCache = {}) => {
 
     // 2. ✅ CANCELLED - Second priority
     if (isCancelledDetected) {
+      // Ensure we have proper details - prefer status_details from server
+      const scheduleDetails = after?.status_details || before?.status_details || itemLabel || 'schedule';
+      
+      console.log('⚠️ CANCELLED LOG:', { scheduleDetails, cancellationReason, empName, formattedDate });
+      
       if (cancellationReason) {
         return {
           icon: XCircle,
           title: "Schedule Cancelled",
           summary: `${empName} on ${formattedDate}`,
           details: `
-            ${b(user_email)} cancelled ${itemLabel} for ${b(empName)}${withEmp}
-            on ${formattedDate}: ${b(cancellationReason)}.
+            ${b(user_email)} cancelled ${b(scheduleDetails)} for ${b(empName)}${withEmp}
+            on ${formattedDate} [${b(cancellationReason)}]
           `
         };
       }
-
+      
       return {
         icon: XCircle,
         title: "Schedule Cancelled",
         summary: `${empName} on ${formattedDate}`,
         details: `
-          ${b(user_email)} cancelled ${itemLabel} for ${b(empName)}${withEmp}
+          ${b(user_email)} cancelled ${b(scheduleDetails)} for ${b(empName)}${withEmp}
           on ${formattedDate}.
         `
       };
@@ -439,14 +486,19 @@ const formatLogMessage = (log, nameCache = {}) => {
 
     // 3. ✅ POSTPONED - Third priority
     if (isPostponedDetected) {
+      // Ensure we have proper details
+      const scheduleDetails = after?.status_details || before?.status_details || itemLabel || 'schedule';
+      
+      console.log('⏰ POSTPONED LOG:', { scheduleDetails, isTBA, postponedDate, empName, formattedDate });
+      
       if (isTBA) {
         return {
           icon: Clock,
-          title: "Schedule Postponed (TBA)",
+          title: "Schedule Postponed",
           summary: `${empName} on ${formattedDate}`,
           details: `
-            ${b(user_email)} postponed ${itemLabel} for ${b(empName)}${withEmp}
-            on ${formattedDate} — ${b("To Be Announced")}.
+            ${b(user_email)} postponed ${b(scheduleDetails)} for ${b(empName)}${withEmp}
+            on ${formattedDate} to ${b("TBA (To Be Announced)")}.
           `
         };
       }
@@ -458,7 +510,7 @@ const formatLogMessage = (log, nameCache = {}) => {
           title: "Schedule Postponed",
           summary: `${empName} on ${formattedDate}`,
           details: `
-            ${b(user_email)} postponed ${itemLabel} for ${b(empName)}${withEmp}
+            ${b(user_email)} postponed ${b(scheduleDetails)} for ${b(empName)}${withEmp}
             from ${formattedDate} to ${b(postponedFormatted)}.
           `
         };
@@ -469,22 +521,34 @@ const formatLogMessage = (log, nameCache = {}) => {
         title: "Schedule Postponed",
         summary: `${empName} on ${formattedDate}`,
         details: `
-          ${b(user_email)} postponed ${itemLabel} for ${b(empName)}${withEmp}
+          ${b(user_email)} postponed ${b(scheduleDetails)} for ${b(empName)}${withEmp}
           on ${formattedDate}.
         `
       };
     }
 
-    // 4. ✅ CLEARED ALL SCHEDULE
-    if (after?.clearedAll ||
-      (action === "DELETE" && !after?.client_id && !after?.status_id &&
-        !isCompletedDetected && !isCancelledDetected && !isPostponedDetected)) {
+    // 4. ✅ CLEARED/REMOVED SCHEDULE
+    if (action === "DELETE") {
+      // Get the status details (client/status name) from before field
+      const statusDetails = before?.status_details || before?.client_name || before?.status_label || '';
+      
+      if (statusDetails) {
+        return {
+          icon: Trash2,
+          title: "Schedule Cleared",
+          summary: `${empName} on ${formattedDate}`,
+          details: `
+            ${b(user_email)} removed ${b(statusDetails)} for ${b(empName)} on ${formattedDate}.
+          `
+        };
+      }
+      
       return {
         icon: Trash2,
         title: "Schedule Cleared",
         summary: `${empName} on ${formattedDate}`,
         details: `
-          ${b(user_email)} removed all schedule items for ${b(empName)} on ${formattedDate}.
+          ${b(user_email)} removed schedule for ${b(empName)} on ${formattedDate}.
         `
       };
     }
@@ -492,7 +556,7 @@ const formatLogMessage = (log, nameCache = {}) => {
     // 5. ✅ Created/Removed items (detailed schedule changes)
     const hasCreatedItems = after?.created_items?.length || after?.created?.length;
     const hasRemovedItems = after?.removed_items?.length || after?.removed?.length;
-
+    
     if (hasCreatedItems || hasRemovedItems) {
       const added = [];
       const removed = [];
@@ -504,20 +568,14 @@ const formatLogMessage = (log, nameCache = {}) => {
       // Process created items
       createdItems.forEach((item) => {
         if (item.client_id || item?.client_name) {
-          const clientId = item.client_id;
-          const clientName = clientId ? getName(clientId, 'client', 'Client') :
-            item.client_name || 'a client';
-          const typeId = item.schedule_type_id;
-          const typeName = typeId ? getName(typeId, 'schedule-type', 'Type') :
-            item.schedule_type_name || '';
+          // PRIORITIZE THE NAME FROM ITEM DATA
+          const clientName = item.client_name || `Client ${item.client_id}`;
+          const typeName = item.schedule_type_name || '';
           added.push(`Added ${b(clientName)}${typeName ? ` (${typeName})` : ''}`);
         } else if (item.status_id || item?.status_label) {
-          const statusId = item.status_id;
-          const statusName = statusId ? getName(statusId, 'status', 'Status') :
-            item.status_label || 'a status';
-          const withEmpId = item.with_employee_id;
-          const withEmpName = withEmpId ? getName(withEmpId, 'employee', 'Employee') :
-            item.with_employee_name || null;
+          // PRIORITIZE THE NAME FROM ITEM DATA
+          const statusName = item.status_label || `Status ${item.status_id}`;
+          const withEmpName = item.with_employee_name || null;
           const withText = withEmpName ? ` with ${b(withEmpName)}` : '';
           added.push(`Added ${b(statusName)}${withText}`);
         }
@@ -526,20 +584,14 @@ const formatLogMessage = (log, nameCache = {}) => {
       // Process removed items
       removedItems.forEach((item) => {
         if (item.client_id || item?.client_name) {
-          const clientId = item.client_id;
-          const clientName = clientId ? getName(clientId, 'client', 'Client') :
-            item.client_name || 'a client';
-          const typeId = item.schedule_type_id;
-          const typeName = typeId ? getName(typeId, 'schedule-type', 'Type') :
-            item.schedule_type_name || '';
+          // PRIORITIZE THE NAME FROM ITEM DATA
+          const clientName = item.client_name || `Client ${item.client_id}`;
+          const typeName = item.schedule_type_name || '';
           removed.push(`Removed ${b(clientName)}${typeName ? ` (${typeName})` : ''}`);
         } else if (item.status_id || item?.status_label) {
-          const statusId = item.status_id;
-          const statusName = statusId ? getName(statusId, 'status', 'Status') :
-            item.status_label || 'a status';
-          const withEmpId = item.with_employee_id;
-          const withEmpName = withEmpId ? getName(withEmpId, 'employee', 'Employee') :
-            item.with_employee_name || null;
+          // PRIORITIZE THE NAME FROM ITEM DATA
+          const statusName = item.status_label || `Status ${item.status_id}`;
+          const withEmpName = item.with_employee_name || null;
           const withText = withEmpName ? ` with ${b(withEmpName)}` : '';
           removed.push(`Removed ${b(statusName)}${withText}`);
         }
@@ -881,7 +933,7 @@ function TimeDisplay({ timestamp }) {
    ====================================================== */
 function LogCard({ log, nameCache }) {
   const formatted = formatLogMessage(log, nameCache);
-
+  
   // ✔ Fallback icon if missing
   const Icon = formatted.icon || FileText;
 
@@ -1132,35 +1184,35 @@ export default function LogsPage() {
         // Employee IDs from various sources
         if (after?.employee_id) employeeIds.add(after.employee_id);
         if (before?.employee_id) employeeIds.add(before.employee_id);
-
+        
         // Extract from record_id if no employee_id in after/before
         const empIdFromRecordId = extractEmployeeIdFromRecordId(log.record_id);
         if (empIdFromRecordId) employeeIds.add(empIdFromRecordId);
-
+        
         // With employee IDs
         if (after?.with_employee_id) employeeIds.add(after.with_employee_id);
         if (before?.with_employee_id) employeeIds.add(before.with_employee_id);
-
+        
         // Client IDs from various sources
         if (after?.client_id) clientIds.add(after.client_id);
         if (before?.client_id) clientIds.add(before.client_id);
-
+        
         // Extract from record_id
         const clientIdFromRecordId = extractClientIdFromRecordId(log.record_id);
         if (clientIdFromRecordId) clientIds.add(clientIdFromRecordId);
-
+        
         // Status IDs
         if (after?.status_id) statusIds.add(after.status_id);
         if (before?.status_id) statusIds.add(before.status_id);
-
+        
         // Schedule Type IDs
         if (after?.schedule_type_id) scheduleTypeIds.add(after.schedule_type_id);
         if (before?.schedule_type_id) scheduleTypeIds.add(before.schedule_type_id);
-
+        
         // Check created/removed items arrays
         const createdItems = after?.created_items || after?.created || [];
         const removedItems = after?.removed_items || after?.removed || [];
-
+        
         [...createdItems, ...removedItems].forEach(item => {
           if (item.employee_id) employeeIds.add(item.employee_id);
           if (item.with_employee_id) employeeIds.add(item.with_employee_id);
@@ -1182,7 +1234,7 @@ export default function LogsPage() {
   // Fetch names for IDs
   const fetchNames = useCallback(async (ids, token) => {
     const cache = {};
-
+    
     // Fetch employee names
     if (ids.employeeIds.length > 0) {
       const employeeNames = await fetchNamesFromAPI(ids.employeeIds, 'employee', token);
@@ -1190,7 +1242,7 @@ export default function LogsPage() {
         if (name) cache[`employee_${id}`] = name;
       });
     }
-
+    
     // Fetch client names
     if (ids.clientIds.length > 0) {
       const clientNames = await fetchNamesFromAPI(ids.clientIds, 'client', token);
@@ -1198,7 +1250,7 @@ export default function LogsPage() {
         if (name) cache[`client_${id}`] = name;
       });
     }
-
+    
     // Fetch schedule type names
     if (ids.scheduleTypeIds.length > 0) {
       const typeNames = await fetchNamesFromAPI(ids.scheduleTypeIds, 'schedule-type', token);
@@ -1206,7 +1258,7 @@ export default function LogsPage() {
         if (name) cache[`schedule-type_${id}`] = name;
       });
     }
-
+    
     // For status IDs
     if (ids.statusIds.length > 0) {
       try {
@@ -1229,7 +1281,7 @@ export default function LogsPage() {
         console.error('Error fetching statuses:', error);
       }
     }
-
+    
     return cache;
   }, []);
 
@@ -1259,7 +1311,7 @@ export default function LogsPage() {
         const data = await res.json();
         if (data.success && data.logs) {
           setLogs(data.logs);
-
+          
           // Extract IDs and fetch names
           const ids = extractIdsToFetch(data.logs);
           const nameCache = await fetchNames(ids, token);
@@ -1372,14 +1424,12 @@ export default function LogsPage() {
   const hasActiveFilters = useMemo(() => {
     return filters.action || filters.table || filters.user || filters.timeRange;
   }, [filters]);
-
-  // In your loading state JSX section, replace with:
-  if (loading) {
-    return (
-      <div className="page-loading">
-        <div className="loading-spinner"></div>
-        <div className="loading-text">Loading audit logs...</div>
-        <style jsx>{`
+if (loading) {
+  return (
+    <div className="page-loading">
+      <div className="loading-spinner"></div>
+      <div className="loading-text">Loading audit logs...</div>
+      <style jsx>{`
         .page-loading {
           display: flex;
           flex-direction: column;
@@ -1409,9 +1459,10 @@ export default function LogsPage() {
           to { transform: rotate(360deg); }
         }
       `}</style>
-      </div>
-    );
-  }
+    </div>
+  );
+}
+
   if (error) {
     return (
       <div className="error-container">
@@ -1469,9 +1520,9 @@ export default function LogsPage() {
         ) : (
           <div className="logs-list">
             {filteredLogs.map(log => (
-              <LogCard
-                key={`${log.id}-${log.created_at}`}
-                log={log}
+              <LogCard 
+                key={`${log.id}-${log.created_at}`} 
+                log={log} 
                 nameCache={nameCache}
               />
             ))}
@@ -2187,4 +2238,4 @@ export default function LogsPage() {
       `}</style>
     </div>
   );
-}
+} 

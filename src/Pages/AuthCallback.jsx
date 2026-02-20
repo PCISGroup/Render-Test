@@ -31,6 +31,8 @@ const AuthCallback = () => {
         console.log('✅ Supabase session user:', userEmail);
 
         // --- Call backend to check if user is allowed ---
+        const loginExtension = localStorage.getItem('loginExtension');
+
         const res = await fetch(
           `${import.meta.env.VITE_API_URL}/api/auth/login`,
           {
@@ -39,21 +41,34 @@ const AuthCallback = () => {
             headers: {
               'Content-Type': 'application/json'
             },
-            body: JSON.stringify({ access_token: accessToken })
+            body: JSON.stringify({
+              access_token: accessToken,
+              extension: loginExtension || undefined
+            })
           }
         );
 
         const json = await res.json().catch(() => ({}));
 
         if (res.ok && json.success) {
-          console.log('✅ Admin allowed:', userEmail);
-          navigate('/schedule', { replace: true });
+          const userRole = json.user?.role || 'employee';
+          localStorage.setItem('userRole', userRole);
+          localStorage.removeItem('loginExtension');
+          console.log('✅ Allowed:', userEmail, 'Role:', userRole);
+
+          if (userRole === 'employee') {
+            navigate('/employee', { replace: true });
+          } else {
+            navigate('/schedule', { replace: true });
+          }
         } else {
           console.warn('❌ Admin not allowed:', userEmail, json.error);
           alert('You are not authorized to access this dashboard.');
 
           // Sign out from Supabase to prevent session reuse
           await supabase.auth.signOut();
+          localStorage.removeItem('loginExtension');
+          localStorage.removeItem('userRole');
           navigate('/login');
         }
 

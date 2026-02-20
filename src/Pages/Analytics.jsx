@@ -269,12 +269,12 @@ export default function Analytics() {
     }
   }, [employeesArray.length]);
 
-  // Fetch schedule states when component loads
+  // Fetch schedule states when component loads or when clients/statuses change
   useEffect(() => {
     if (employeesArray.length > 0) {
       fetchScheduleStates();
     }
-  }, [employeesArray.length, fetchScheduleStates]);
+  }, [employeesArray.length, fetchScheduleStates, clientsData, statusesData]);
 
   // Function to get state for a specific entry
   const getEntryState = useCallback((employeeId, date, statusId) => {

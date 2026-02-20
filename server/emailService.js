@@ -63,7 +63,7 @@ class EmailService {
   const dateStr = format(date, 'yyyy-MM-dd');
 
   try {
-    const result = await query(`
+      const result = await query(`
       WITH schedule_data AS (
         SELECT 
           e.id as employee_id,
@@ -84,6 +84,9 @@ class EmailService {
                 COALESCE(s.label, 'Status ' || es.status_id::TEXT)
             END
             ORDER BY es.id
+          ) FILTER (WHERE 
+            LOWER(COALESCE(ss.state_name, '')) != 'cancelled' 
+            AND NOT (LOWER(COALESCE(ss.state_name, '')) = 'postponed' AND es.postponed_date IS NULL)
           ) as status_names
         FROM employee_schedule es
         JOIN employees e ON es.employee_id = e.id
@@ -91,6 +94,7 @@ class EmailService {
         LEFT JOIN clients c ON es.client_id = c.id
         LEFT JOIN employees we ON es.with_employee_id = we.id
         LEFT JOIN schedule_types st ON es.schedule_type_id = st.id
+        LEFT JOIN schedule_states ss ON es.schedule_state_id = ss.id
         WHERE es.date = $1
         GROUP BY e.id, e.name, e.ext
       )
@@ -101,21 +105,46 @@ class EmailService {
       FROM schedule_data
       ORDER BY name
     `, [dateStr]);
-
     const scheduleData = result.rows.map(row => ({
       name: row.name,
       ext: row.ext || '',
       statuses: row.statuses || []
     }));
 
-    console.log(`📊 Found ${scheduleData.length} employees with schedules for ${dateStr}`);
+    // Deduplicate statuses: skip base client if typed version exists
+    const dedupScheduleData = scheduleData.map(emp => {
+      const seenBaseClients = new Set();
+      const uniqueStatuses = [];
+      
+      emp.statuses.forEach(status => {
+        // Check if status contains typed client format: "ClientName (TypeName)"
+        const typedClientMatch = status.match(/^(.*?)\s*\(.*?\)$/);
+        
+        if (typedClientMatch) {
+          // This is a typed client - mark base as seen
+          const baseName = typedClientMatch[1];
+          seenBaseClients.add(baseName);
+          uniqueStatuses.push(status);
+        } else if (!seenBaseClients.has(status)) {
+          // Only add base client if we haven't seen a typed version
+          uniqueStatuses.push(status);
+        }
+      });
+      
+      return {
+        ...emp,
+        statuses: uniqueStatuses
+      };
+    });
+
+    console.log(`📊 Found ${dedupScheduleData.length} employees with schedules for ${dateStr}`);
 
     // DEBUG: Log first few entries
-    if (scheduleData.length > 0) {
-      console.log('🔍 DEBUG - First employee statuses:', JSON.stringify(scheduleData[0], null, 2));
+    if (dedupScheduleData.length > 0) {
+      console.log('🔍 DEBUG - First employee statuses:', JSON.stringify(dedupScheduleData[0], null, 2));
     }
 
-    return scheduleData;
+    return dedupScheduleData;
 
   } catch (error) {
     console.error('Error fetching schedule data:', error);

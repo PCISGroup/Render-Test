@@ -4,6 +4,7 @@ import { supabase } from '../lib/supabaseClient';
 
 const AuthWrapper = () => {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [userRole, setUserRole] = useState(() => localStorage.getItem('userRole'));
   const [loading, setLoading] = useState(true);
   const location = useLocation();
 
@@ -25,12 +26,15 @@ const AuthWrapper = () => {
         
         if (session) {
           setIsAuthenticated(true);
+          setUserRole(localStorage.getItem('userRole'));
         } else {
           setIsAuthenticated(false);
+          setUserRole(null);
         }
       } catch (error) {
         console.error('Auth check error:', error);
         setIsAuthenticated(false);
+        setUserRole(null);
       } finally {
         setLoading(false);
       }
@@ -60,6 +64,25 @@ const AuthWrapper = () => {
   if (!isAuthenticated) {
     console.log('➡️ Redirecting to /login');
     return <Navigate to="/login" replace />;
+  }
+
+  // If authenticated but no role, sign out and redirect to prevent loop
+  if (isAuthenticated && !userRole) {
+    console.log('⚠️ Session exists but no userRole - signing out to prevent loop');
+    supabase.auth.signOut().then(() => {
+      localStorage.clear();
+      window.location.href = '/login';
+    });
+    return (
+      <div className="loading-container">
+        <div className="loading-spinner"></div>
+        <p>Clearing session...</p>
+      </div>
+    );
+  }
+
+  if (userRole === 'employee' && location.pathname !== '/employee') {
+    return <Navigate to="/employee" replace />;
   }
 
   // If authenticated, render the child routes

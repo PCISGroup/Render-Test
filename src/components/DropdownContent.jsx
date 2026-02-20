@@ -8,12 +8,15 @@ const DropdownContent = React.memo(({
     selectedStatuses,
     statusConfigs,
     toggleStatus,
+    replaceTypedWithBaseClient,
+    replaceBaseClientWithType,
     saving,
     onClose,
     activeDropdown,
     setActiveDropdown,
     employeesList = [],
-    scheduleTypes = []
+    scheduleTypes = [],
+    showSearch: initialShowSearch = false
 }) => {
     const dropdownRef = useRef(null);
     const inputRef = useRef(null);
@@ -22,10 +25,15 @@ const DropdownContent = React.memo(({
     const hoverTimeoutRef = useRef(null);
     
     const [searchTerm, setSearchTerm] = useState("");
-    const [showSearch, setShowSearch] = useState(false);
+    const [showSearch, setShowSearch] = useState(initialShowSearch);
     const [selectedEmployee, setSelectedEmployee] = useState(null);
     const [hoverClientId, setHoverClientId] = useState(null);
     const [popupStyle, setPopupStyle] = useState({});
+
+    // Initialize and sync showSearch based on prop
+    useEffect(() => {
+        setShowSearch(initialShowSearch);
+    }, [initialShowSearch]);
 
     // Separate clients and statuses
     const clients = React.useMemo(() => 
@@ -214,8 +222,19 @@ const DropdownContent = React.memo(({
 
     // Handle client selection (click on client name)
     const handleClientSelect = (clientId) => {
-        // Toggle the client selection (with/without type handling is done in toggleStatus)
-        toggleStatus(employeeId, dateStr, clientId);
+        // Check if there are any typed versions of this client
+        const hasTypedVersions = selectedStatuses.some(statusId => 
+            typeof statusId === 'string' && statusId.startsWith(clientId + '_type-')
+        );
+        
+        if (hasTypedVersions) {
+            // If there are typed versions, replace them all with the base client
+            replaceTypedWithBaseClient(employeeId, dateStr, clientId);
+        } else {
+            // Otherwise just toggle normally
+            toggleStatus(employeeId, dateStr, clientId);
+        }
+        
         setSearchTerm("");
         setShowSearch(false);
         setSelectedEmployee(null);
@@ -224,25 +243,32 @@ const DropdownContent = React.memo(({
 
     // Handle client with type selection
     const handleClientWithType = (clientId, typeId) => {
-    // Create combined ID: "client-{clientId}_type-{typeId}"
-    const combinedId = `${clientId}_type-${typeId}`;
+        // Create combined ID: "client-{clientId}_type-{typeId}"
+        const combinedId = `${clientId}_type-${typeId}`;
 
-    console.log('🎯 handleClientWithType DEBUG:', { 
-        clientId, 
-        typeId, 
-        combinedId,
-        currentSelectedStatuses: selectedStatuses,
-        isAlreadySelected: selectedStatuses.includes(combinedId)
-    });
+        // Check if this type is already selected
+        const isAlreadySelected = selectedStatuses.includes(combinedId);
 
-    // Toggle the specific typed status.
-    // If it's already selected, it will be removed
-    toggleStatus(employeeId, dateStr, combinedId);
-    setSearchTerm("");
-    setShowSearch(false);
-    setSelectedEmployee(null);
-    setHoverClientId(null);
-};
+        // If selecting a type (not deselecting)
+        if (!isAlreadySelected) {
+            // Check if the base client (without type) exists
+            if (selectedStatuses.includes(clientId)) {
+                // Remove base client and add type in one operation
+                replaceBaseClientWithType(employeeId, dateStr, clientId, combinedId);
+            } else {
+                // No base client, just add the type normally
+                toggleStatus(employeeId, dateStr, combinedId);
+            }
+        } else {
+            // Deselecting the type - toggleStatus will handle adding back base client if needed
+            toggleStatus(employeeId, dateStr, combinedId);
+        }
+        
+        setSearchTerm("");
+        setShowSearch(false);
+        setSelectedEmployee(null);
+        setHoverClientId(null);
+    };
 
     // Handle employee selection for "With ..."
     const handleEmployeeSelect = (employee) => {
