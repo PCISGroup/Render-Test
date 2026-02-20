@@ -199,8 +199,28 @@ export async function initDB() {
     id SERIAL PRIMARY KEY,
     reason TEXT NOT NULL,
     note TEXT,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
   );
+`);
+
+    // Migrate existing created_at column to TIMESTAMPTZ
+    await client.query(`
+  DO $$
+  BEGIN
+    -- Check if column exists and is not already TIMESTAMPTZ
+    IF EXISTS (
+      SELECT 1 FROM information_schema.columns 
+      WHERE table_name = 'cancellation_reasons' 
+      AND column_name = 'created_at'
+      AND data_type != 'timestamp with time zone'
+    ) THEN
+      ALTER TABLE cancellation_reasons 
+      ALTER COLUMN created_at TYPE TIMESTAMPTZ USING created_at AT TIME ZONE 'UTC';
+      
+      ALTER TABLE cancellation_reasons 
+      ALTER COLUMN created_at SET DEFAULT NOW();
+    END IF;
+  END $$;
 `);
 
     // Add cancellation_reason_id to employee_schedule table
