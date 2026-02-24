@@ -223,43 +223,107 @@ export default function Analytics() {
       
       const startDateStr = startDate.toISOString().split('T')[0];
       const endDateStr = endDate.toISOString().split('T')[0];
+      const cacheParam = Date.now(); // Bust cache with timestamp
+      
+      console.log('📡 Fetching states from database for ' + employeesArray.length + ' employees from', startDateStr, 'to', endDateStr);
       
       const allStates = [];
       
       // Fetch states for each employee individually (since bulk endpoint might not work)
       for (const employee of employeesArray) {
         try {
-          const response = await fetch(
-            `${API_BASE_URL}/api/schedule-states?` +
+          const url = `${API_BASE_URL}/api/schedule-states?` +
             `employeeId=${employee.id}&` +
             `startDate=${startDateStr}&` +
-            `endDate=${endDateStr}`,
-            {
-              headers: {
-                'Authorization': `Bearer ${token}`,
-                'Content-Type': 'application/json'
-              }
-            }
-          );
+            `endDate=${endDateStr}&` +
+            `_=${cacheParam}`;
+          
+          console.log(`  Fetching for employee ${employee.id}:`, url);
+          
+          const response = await fetch(url, {
+            headers: {
+              'Authorization': `Bearer ${token}`,
+              'Content-Type': 'application/json',
+              'Cache-Control': 'no-cache, no-store, must-revalidate',
+              'Pragma': 'no-cache'
+            },
+            cache: 'no-store'
+          });
           
           if (response.ok) {
             const result = await response.json();
+            console.log(`  Response for employee ${employee.id}:`, result);
+            
             if (result.success && result.scheduleStates) {
               // Add employee ID to each state
               const statesWithEmployeeId = result.scheduleStates.map(state => ({
                 ...state,
                 employee_id: employee.id
               }));
+              console.log(`📦 Employee ${employee.id} (${employee.name}): ${statesWithEmployeeId.length} states`, statesWithEmployeeId);
               allStates.push(...statesWithEmployeeId);
+            } else {
+              console.warn(`  No states in response for employee ${employee.id}`);
             }
+          } else {
+            console.error(`  Response not OK for employee ${employee.id}:`, response.status, response.statusText);
           }
         } catch (err) {
-          console.error(`Error fetching states for employee ${employee.id}:`, err);
+          console.error(`❌ Error fetching states for employee ${employee.id}:`, err);
         }
       }
       
-      console.log('✅ Fetched schedule states:', allStates);
-      setScheduleStates(allStates);
+      console.log('✅ Total states from database:', allStates.length);
+      console.log('📋 All states before inheritance fix:', allStates);
+      
+      // IMPORTANT: Handle typed entries with null state_name
+      // The API returns typed entries (like client-64_type-9) with state_name: null
+      // We need to inherit the state from the base entry (client-64)
+      const statesByBaseId = {};
+      
+      // First pass: collect all states by their base ID
+      allStates.forEach(state => {
+        const baseStatusId = extractBaseClientId(state.status_id);
+        const key = `${state.employee_id}_${state.date}_${baseStatusId}`;
+        
+        // Only keep entries that have an actual state_name
+        if (state.state_name) {
+          statesByBaseId[key] = state;
+          console.log(`  ✅ Storing state for ${baseStatusId}: ${state.state_name}`);
+        }
+      });
+      
+      // Second pass: fill in typed entries from their base entries
+      const inheritedStates = allStates.map(state => {
+        // If this entry has a state_name, it's fine
+        if (state.state_name) {
+          return state;
+        }
+        
+        // If this is a typed entry with null state_name, inherit from base
+        if (state.status_id && state.status_id.includes('_type-') && !state.state_name) {
+          const baseStatusId = extractBaseClientId(state.status_id);
+          const key = `${state.employee_id}_${state.date}_${baseStatusId}`;
+          const baseState = statesByBaseId[key];
+          
+          if (baseState) {
+            console.log(`  📌 Typed entry ${state.status_id} inherited from ${baseStatusId}: ${baseState.state_name}`);
+            return {
+              ...state,
+              state_name: baseState.state_name,
+              postponed_date: baseState.postponed_date,
+              cancellation_reason: baseState.cancellation_reason,
+              cancellation_note: baseState.cancellation_note,
+              cancelled_at: baseState.cancelled_at
+            };
+          }
+        }
+        
+        return state;
+      });
+      
+      console.log('📋 All states after inheritance fix:', inheritedStates);
+      setScheduleStates(inheritedStates);
       
     } catch (err) {
       console.error('❌ Error fetching schedule states:', err);
@@ -267,7 +331,7 @@ export default function Analytics() {
     } finally {
       setStatesLoading(false);
     }
-  }, [employeesArray.length]);
+  }, [employeesArray, employeesArray.length]);
 
   // Fetch schedule states when component loads or when clients/statuses change
   useEffect(() => {

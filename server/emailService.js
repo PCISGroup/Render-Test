@@ -63,31 +63,35 @@ class EmailService {
   const dateStr = format(date, 'yyyy-MM-dd');
 
   try {
-      const result = await query(`
+    const result = await query(`
       WITH schedule_data AS (
         SELECT 
           e.id as employee_id,
           e.name,
           e.ext,
-          ARRAY_AGG(
-            CASE 
-              WHEN es.client_id IS NOT NULL AND es.schedule_type_id IS NOT NULL THEN
-                COALESCE(c.name, 'Client ' || es.client_id::TEXT) || 
-                ' (' || COALESCE(st.type_name, '') || ')'
-              WHEN es.client_id IS NOT NULL AND es.schedule_type_id IS NULL THEN
-                COALESCE(c.name, 'Client ' || es.client_id::TEXT)
-              WHEN (s.label ILIKE '%with%') AND es.with_employee_id IS NOT NULL THEN
-                'With ' || COALESCE(we.name, 'Unknown')
-              WHEN (s.label ILIKE '%with%') AND es.with_employee_id IS NULL THEN
-                'With ...'
-              ELSE
-                COALESCE(s.label, 'Status ' || es.status_id::TEXT)
-            END
-            ORDER BY es.id
-          ) FILTER (WHERE 
-            LOWER(COALESCE(ss.state_name, '')) != 'cancelled' 
-            AND NOT (LOWER(COALESCE(ss.state_name, '')) = 'postponed' AND es.postponed_date IS NULL)
-          ) as status_names
+          CASE 
+            WHEN es.client_id IS NOT NULL THEN
+              COALESCE(c.name, 'Client ' || es.client_id::TEXT)
+            WHEN (s.label ILIKE '%with%') AND es.with_employee_id IS NOT NULL THEN
+              'With ' || COALESCE(we.name, 'Unknown')
+            WHEN (s.label ILIKE '%with%') AND es.with_employee_id IS NULL THEN
+              'With ...'
+            ELSE
+              COALESCE(s.label, 'Status ' || es.status_id::TEXT)
+          END as base_status,
+          COALESCE(st.type_name, '') as type_name,
+          es.id as schedule_id,
+          ss.state_name,
+          s.label as status_label,
+          es.postponed_date,
+          es.schedule_state_id,
+          es.status_id,
+          CASE 
+            WHEN LOWER(COALESCE(ss.state_name, '')) = 'cancelled' THEN 'Cancelled'
+            WHEN LOWER(COALESCE(ss.state_name, '')) = 'postponed' 
+                 AND (es.postponed_date IS NULL OR es.postponed_date::TEXT = '') THEN 'TBA'
+            ELSE ''
+          END as state_prefix
         FROM employee_schedule es
         JOIN employees e ON es.employee_id = e.id
         LEFT JOIN statuses s ON es.status_id = s.id
@@ -96,58 +100,56 @@ class EmailService {
         LEFT JOIN schedule_types st ON es.schedule_type_id = st.id
         LEFT JOIN schedule_states ss ON es.schedule_state_id = ss.id
         WHERE es.date = $1
-        GROUP BY e.id, e.name, e.ext
+      ),
+      grouped_data AS (
+        SELECT
+          employee_id,
+          name,
+          ext,
+          base_status,
+          CASE 
+            WHEN MAX(CASE WHEN state_prefix = 'Cancelled' THEN 1 ELSE 0 END) = 1 THEN 'Cancelled'
+            WHEN MAX(CASE WHEN state_prefix = 'TBA' THEN 1 ELSE 0 END) = 1 THEN 'TBA'
+            ELSE ''
+          END as state_prefix,
+          STRING_AGG(DISTINCT type_name, ' - ' ORDER BY type_name) FILTER (WHERE type_name != '') as types,
+          MIN(schedule_id) as display_order
+        FROM schedule_data
+        GROUP BY employee_id, name, ext, base_status
       )
-      SELECT 
+      SELECT
         name,
         ext,
-        status_names as statuses
-      FROM schedule_data
-      ORDER BY name
+        ARRAY_AGG(
+          CASE 
+            WHEN state_prefix != '' AND types IS NOT NULL AND types != '' THEN 
+              state_prefix || ' : ' || base_status || ' (' || types || ')'
+            WHEN state_prefix != '' THEN 
+              state_prefix || ' : ' || base_status
+            WHEN types IS NOT NULL AND types != '' THEN 
+              base_status || ' (' || types || ')'
+            ELSE 
+              base_status
+          END
+          ORDER BY display_order
+        ) as statuses
+      FROM grouped_data
+      GROUP BY name, ext
+      ORDER BY MIN(display_order)
     `, [dateStr]);
+
     const scheduleData = result.rows.map(row => ({
       name: row.name,
       ext: row.ext || '',
       statuses: row.statuses || []
     }));
 
-    // Deduplicate statuses: skip base client if typed version exists
-    const dedupScheduleData = scheduleData.map(emp => {
-      const seenBaseClients = new Set();
-      const uniqueStatuses = [];
-      
-      emp.statuses.forEach(status => {
-        // Check if status contains typed client format: "ClientName (TypeName)"
-        const typedClientMatch = status.match(/^(.*?)\s*\(.*?\)$/);
-        
-        if (typedClientMatch) {
-          // This is a typed client - mark base as seen
-          const baseName = typedClientMatch[1];
-          seenBaseClients.add(baseName);
-          uniqueStatuses.push(status);
-        } else if (!seenBaseClients.has(status)) {
-          // Only add base client if we haven't seen a typed version
-          uniqueStatuses.push(status);
-        }
-      });
-      
-      return {
-        ...emp,
-        statuses: uniqueStatuses
-      };
-    });
-
-    console.log(`📊 Found ${dedupScheduleData.length} employees with schedules for ${dateStr}`);
-
-    // DEBUG: Log first few entries
-    if (dedupScheduleData.length > 0) {
-      console.log('🔍 DEBUG - First employee statuses:', JSON.stringify(dedupScheduleData[0], null, 2));
-    }
-
-    return dedupScheduleData;
+    console.log(`📊 FINAL: ${scheduleData.length} employees in schedule (including Cancelled/TBA)`);
+    
+    return scheduleData;
 
   } catch (error) {
-    console.error('Error fetching schedule data:', error);
+    console.error('❌ Error fetching schedule data:', error);
     return [];
   }
 }

@@ -359,12 +359,10 @@ ORDER BY es.date
       const day = String(lebanonDate.getUTCDate()).padStart(2, '0');
       const lebanonDateStr = `${year}-${month}-${day}`;
       
-      // Convert cancelled_at timestamp to Lebanon timezone string
+      // Return cancelled_at as-is (UTC) - frontend will handle timezone display
       let cancelledAt = null;
       if (row.cancelled_at) {
-        const cancelledUtcDate = new Date(row.cancelled_at);
-        const cancelledLebanonDate = new Date(cancelledUtcDate.getTime() + (2 * 60 * 60 * 1000)); // Add 2 hours for Lebanon timezone
-        cancelledAt = cancelledLebanonDate.toISOString();
+        cancelledAt = row.cancelled_at;
       }
       
       return {

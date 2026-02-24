@@ -310,7 +310,9 @@ const EmployeeDashboard = () => {
         
         if (result.success && result.scheduleStates) {
           const statesMap = {};
+          const statesByBaseId = {}; // Intermediate map to handle typed entries
           
+          // First pass: collect all states by their base ID
           result.scheduleStates.forEach(state => {
             const dateStr = state.date;
             const key = `${employeeId}_${dateStr}`;
@@ -318,17 +320,22 @@ const EmployeeDashboard = () => {
             if (!statesMap[key]) {
               statesMap[key] = {};
             }
+            if (!statesByBaseId[key]) {
+              statesByBaseId[key] = {};
+            }
             
+            // Get base status ID (strip _type-X suffix if present)
+            const baseStatusId = state.status_id.startsWith('client-')
+              ? state.status_id.split('_type-')[0]
+              : state.status_id;
+            
+            // Only process entries with actual state_name
             if (state.status_id && state.state_name) {
-              const baseStatusId = state.status_id.startsWith('client-')
-                ? state.status_id.split('_type-')[0]
-                : state.status_id;
-              
               const postponedDate = state.postponed_date || null;
               const isPostponed = state.state_name.toLowerCase() === 'postponed';
               const isTBA = isPostponed && (!postponedDate || String(postponedDate).trim() === '');
 
-              statesMap[key][baseStatusId] = {
+              const stateData = {
                 state: state.state_name.toLowerCase(),
                 postponedDate,
                 isTBA,
@@ -336,11 +343,36 @@ const EmployeeDashboard = () => {
                 note: state.cancellation_note || '',
                 cancelledAt: state.cancelled_at || null
               };
+              
+              // Store by base ID so typed entries can inherit from it
+              statesByBaseId[key][baseStatusId] = stateData;
+              // Also store in the final map
+              statesMap[key][baseStatusId] = stateData;
+              
+              console.log(`📌 Loaded state for ${baseStatusId}: ${state.state_name}`);
+            }
+          });
+          
+          // Second pass: fill in typed entries from their base entries
+          result.scheduleStates.forEach(state => {
+            const dateStr = state.date;
+            const key = `${employeeId}_${dateStr}`;
+            
+            // If this is a typed entry with null state_name, inherit from base
+            if (state.status_id && !state.state_name && state.status_id.includes('_type-')) {
+              const baseStatusId = state.status_id.split('_type-')[0];
+              
+              if (statesByBaseId[key]?.[baseStatusId]) {
+                // Inherit state from base ID
+                statesMap[key][baseStatusId] = statesByBaseId[key][baseStatusId];
+                console.log(`📌 Typed entry ${state.status_id} inherited from ${baseStatusId}`);
+              }
             }
           });
           
           console.log("✅ Loaded schedule states - final map:", statesMap);
           console.log("📊 Number of date keys:", Object.keys(statesMap).length);
+          console.log("📊 Total state entries:", Object.values(statesMap).reduce((sum, states) => sum + Object.keys(states).length, 0));
           setStatusStates(statesMap);
         } else {
           console.warn("⚠️ No schedule states in response or success=false");
@@ -866,11 +898,15 @@ const EmployeeDashboard = () => {
     const key = `${employeeId}_${dateStr}`;
     const baseId = getBaseStatusId(statusId);
     
+    // Store previous state for error recovery
+    let previousState;
+    
     // If newState is null, we're deleting the state
     if (newState === null) {
-      console.log('🗑️ Deleting state:', { employeeId, dateStr, statusId });
+      console.log('🗑️ Deleting state:', { employeeId, dateStr, baseId });
       
       setStatusStates(prev => {
+        previousState = prev[key]?.[baseId];
         const newStates = { ...prev };
         if (newStates[key] && newStates[key][baseId]) {
           delete newStates[key][baseId];
@@ -905,24 +941,40 @@ const EmployeeDashboard = () => {
 
         if (!response.ok) {
           const errorText = await response.text();
-          console.warn(`⚠️ Could not delete state from backend: ${errorText}`);
+          console.error(`❌ Failed to delete state from backend: ${response.status} - ${errorText}`);
+          throw new Error(`Delete failed: ${errorText}`);
         } else {
           console.log('✅ State deleted successfully');
+          return { success: true };
         }
       } catch (error) {
         console.error('❌ Error deleting state:', error);
+        // Revert on error
+        if (previousState) {
+          setStatusStates(prev => ({
+            ...prev,
+            [key]: {
+              ...(prev[key] || {}),
+              [baseId]: previousState
+            }
+          }));
+        }
+        throw error;
       }
     } else {
       // Saving a new state
-      console.log('💾 Saving state:', { employeeId, dateStr, statusId, newState });
+      console.log('💾 Saving state:', { employeeId, dateStr, baseId, newState });
       
-      setStatusStates(prev => ({
-        ...prev,
-        [key]: {
-          ...(prev[key] || {}),
-          [baseId]: newState
-        }
-      }));
+      setStatusStates(prev => {
+        previousState = prev[key]?.[baseId];
+        return {
+          ...prev,
+          [key]: {
+            ...(prev[key] || {}),
+            [baseId]: newState
+          }
+        };
+      });
 
       try {
         const API_BASE_URL = import.meta.env.VITE_API_URL;
@@ -952,19 +1004,40 @@ const EmployeeDashboard = () => {
         });
 
         if (!response.ok) {
-          throw new Error('Failed to save state');
+          const errorText = await response.text();
+          console.error(`❌ Failed to save state: ${response.status} - ${errorText}`);
+          throw new Error(`Save failed: ${errorText}`);
         }
 
-        console.log('✅ State saved successfully');
+        const result = await response.json();
+        console.log('✅ State saved successfully to API:', result);
+        return { success: true };
       } catch (error) {
         console.error('❌ Error saving state:', error);
-        setStatusStates(prev => ({
-          ...prev,
-          [key]: {
-            ...(prev[key] || {}),
-            [baseId]: undefined
-          }
-        }));
+        // Revert to previous state on error
+        if (previousState !== undefined) {
+          setStatusStates(prev => ({
+            ...prev,
+            [key]: {
+              ...(prev[key] || {}),
+              [baseId]: previousState
+            }
+          }));
+        } else {
+          // If there was no previous state, remove the entry
+          setStatusStates(prev => {
+            const newStates = { ...prev };
+            if (newStates[key]) {
+              const { [baseId]: _removed, ...rest } = newStates[key];
+              newStates[key] = Object.keys(rest).length > 0 ? rest : undefined;
+              if (newStates[key] === undefined) {
+                delete newStates[key];
+              }
+            }
+            return newStates;
+          });
+        }
+        throw error;
       }
     }
   }, [getBaseStatusId]);
@@ -1058,9 +1131,14 @@ const EmployeeDashboard = () => {
       // Delete state from backend
       if (stateKeyToRemove) {
         try {
-          await handleStatusStateChange(employeeId, dateStr, stateKeyToRemove, null);
+          const deleteResult = await handleStatusStateChange(employeeId, dateStr, stateKeyToRemove, null);
+          if (!deleteResult?.success) {
+            console.warn('⚠️ State delete may have failed, but continuing...');
+          }
         } catch (err) {
           console.error('❌ Error deleting state from backend:', err);
+          // Even if state delete fails, continue with schedule removal
+          // The state will be inconsistent but at least the schedule entry is removed
         }
       }
     }
@@ -1093,35 +1171,42 @@ const EmployeeDashboard = () => {
         });
       }
 
-      showSuccessMessage('Failed to delete status', true);
+      showSuccessMessage(`Failed to delete status: ${error.message}`, true);
       // Still close the modal on error so user can try again
       setShowRemoveConfirm(null);
     }
-  }, [schedules, saving, saveScheduleToDB, showSuccessMessage, handleStatusStateChange, statusStates]);
+  }, [schedules, saving, saveScheduleToDB, showSuccessMessage, handleStatusStateChange]);
 
-  const handleStateOptionClick = useCallback((dateStr, statusIds, stateName) => {
+  const handleStateOptionClick = useCallback(async (dateStr, statusIds, stateName) => {
     if (!employee) return;
     const normalizedState = stateName ? stateName.toLowerCase() : stateName;
     const statusId = Array.isArray(statusIds) ? statusIds[0] : statusIds;
     
-    if (normalizedState === 'postponed') {
-      // Only postpone the specific status ID, not all grouped statuses
-      setPostEmpState({ statusId, statusIds: [statusId], dateStr });
-      setShowPostponeModal(true);
-    } else if (normalizedState === 'cancelled') {
-      const stateKey = `${employee.id}_${dateStr}`;
-      const baseId = getBaseStatusId(statusId);
-      const currentState = statusStates[stateKey]?.[baseId];
-      setCancellationModalState({ 
-        reason: currentState?.reason || '', 
-        note: currentState?.note || '' 
-      });
-      setShowCancellationModal({ statusId, dateStr });
-    } else {
-      handleStatusStateChange(employee.id, dateStr, statusId, normalizedState);
+    try {
+      if (normalizedState === 'postponed') {
+        // Only postpone the specific status ID, not all grouped statuses
+        setPostEmpState({ statusId, statusIds: [statusId], dateStr });
+        setShowPostponeModal(true);
+      } else if (normalizedState === 'cancelled') {
+        const stateKey = `${employee.id}_${dateStr}`;
+        const baseId = getBaseStatusId(statusId);
+        const currentState = statusStates[stateKey]?.[baseId];
+        setCancellationModalState({ 
+          reason: currentState?.reason || '', 
+          note: currentState?.note || '' 
+        });
+        setShowCancellationModal({ statusId, dateStr });
+      } else {
+        // Handle simple state changes (completed, etc) with error handling
+        await handleStatusStateChange(employee.id, dateStr, statusId, normalizedState);
+        showSuccessMessage(`Status marked as ${normalizedState}`);
+      }
+    } catch (error) {
+      console.error('Error changing state:', error);
+      showSuccessMessage(`Failed to update status: ${error.message}`, true);
     }
     setStateDropdownOpen(null);
-  }, [employee, statusStates, handleStatusStateChange, getBaseStatusId]);
+  }, [employee, handleStatusStateChange, getBaseStatusId, showSuccessMessage, statusStates]);
 
   const handlePostponeSave = useCallback(async (statusId, postponeData) => {
     if (!employee) return;
@@ -1134,72 +1219,91 @@ const EmployeeDashboard = () => {
     const isTBA = postponeData.type === 'tba';
     const postponedDate = isTBA ? null : postponeData.value;
 
-    if (isTBA) {
-      await handleStatusStateChange(employee.id, dateStr, primaryStatusId, {
-        state: 'postponed',
-        isTBA: true,
-        postponedDate: null
-      });
-    } else if (postponedDate) {
-      await moveStatusesToDate(employee.id, dateStr, postponedDate, idsToMove);
-      await handleStatusStateChange(employee.id, dateStr, primaryStatusId, {
-        state: 'postponed',
-        isTBA: false,
-        postponedDate: postponedDate
-      });
+    try {
+      if (isTBA) {
+        console.log('⏸️ Saving TBA postponement...');
+        await handleStatusStateChange(employee.id, dateStr, primaryStatusId, {
+          state: 'postponed',
+          isTBA: true,
+          postponedDate: null
+        });
+        console.log('✅ TBA postponement saved');
+      } else if (postponedDate) {
+        console.log('⏸️ Moving status to:', postponedDate);
+        await moveStatusesToDate(employee.id, dateStr, postponedDate, idsToMove);
+        
+        await handleStatusStateChange(employee.id, dateStr, primaryStatusId, {
+          state: 'postponed',
+          isTBA: false,
+          postponedDate: postponedDate
+        });
+        console.log('✅ Status moved and postponement saved');
 
-      const baseId = getBaseStatusId(primaryStatusId);
-      const oldKey = `${employee.id}_${dateStr}`;
-      const newKey = `${employee.id}_${postponedDate}`;
-      const newLocalState = {
-        state: 'postponed',
-        isTBA: false,
-        postponedDate: dateStr
-      };
-
-      setStatusStates(prev => {
-        const next = { ...prev };
-        next[newKey] = {
-          ...(next[newKey] || {}),
-          [baseId]: newLocalState
+        const baseId = getBaseStatusId(primaryStatusId);
+        const oldKey = `${employee.id}_${dateStr}`;
+        const newKey = `${employee.id}_${postponedDate}`;
+        const newLocalState = {
+          state: 'postponed',
+          isTBA: false,
+          postponedDate: dateStr
         };
 
-        if (next[oldKey] && baseId in next[oldKey]) {
-          const { [baseId]: _removed, ...rest } = next[oldKey];
-          if (Object.keys(rest).length > 0) {
-            next[oldKey] = rest;
-          } else {
-            delete next[oldKey];
+        setStatusStates(prev => {
+          const next = { ...prev };
+          next[newKey] = {
+            ...(next[newKey] || {}),
+            [baseId]: newLocalState
+          };
+
+          if (next[oldKey] && baseId in next[oldKey]) {
+            const { [baseId]: _removed, ...rest } = next[oldKey];
+            if (Object.keys(rest).length > 0) {
+              next[oldKey] = rest;
+            } else {
+              delete next[oldKey];
+            }
           }
-        }
 
-        return next;
-      });
+          return next;
+        });
+      }
+      
+      showSuccessMessage('Status postponed successfully');
+      setShowPostponeModal(false);
+    } catch (error) {
+      console.error('❌ Error postponing status:', error);
+      showSuccessMessage(`Failed to postpone status: ${error.message}`, true);
     }
-
-    setShowPostponeModal(false);
-  }, [postEmpState, employee, handleStatusStateChange, moveStatusesToDate, getBaseStatusId]);
+  }, [postEmpState, employee, handleStatusStateChange, moveStatusesToDate, getBaseStatusId, showSuccessMessage]);
 
   const handleCancellationSave = useCallback(async (statusId, reason, note) => {
     if (!employee) return;
     
     const { statusId: stId, dateStr } = showCancellationModal;
     
-    // First save the state change to 'cancelled'
-    await handleStatusStateChange(employee.id, dateStr, stId, {
-      state: 'cancelled'
-    });
-    
-    // Extract baseId to ensure proper matching
-    const baseId = getBaseStatusId(stId);
-    
     try {
+      // First save the state change to 'cancelled'
+      console.log('🔄 Step 1: Changing state to cancelled...');
+      const stateChangeResult = await handleStatusStateChange(employee.id, dateStr, stId, {
+        state: 'cancelled'
+      });
+      
+      if (!stateChangeResult?.success) {
+        throw new Error('Failed to change state to cancelled');
+      }
+      
+      console.log('✅ Step 1 complete: State changed to cancelled');
+      
+      // Extract baseId to ensure proper matching
+      const baseId = getBaseStatusId(stId);
+      
+      // Step 2: Save cancellation reason
       const { data: { session } } = await supabase.auth.getSession();
       const token = session?.access_token;
       
       if (!token) throw new Error('No authentication token');
       
-      console.log('💾 Saving cancellation reason with baseId:', { 
+      console.log('💾 Step 2: Saving cancellation reason with baseId:', { 
         employeeId: employee.id,
         date: dateStr,
         statusId: baseId,
@@ -1225,10 +1329,12 @@ const EmployeeDashboard = () => {
       if (!response.ok) {
         const errorText = await response.text();
         console.error('❌ Failed to save cancellation reason:', errorText);
+        throw new Error(`Failed to save cancellation details: ${errorText}`);
       } else {
         const result = await response.json();
-        console.log('✅ Cancellation reason saved successfully:', result);
-        // Update the local state with the cancellation details instead of reloading everything
+        console.log('✅ Step 2 complete: Cancellation reason saved successfully:', result);
+        
+        // Update the local state with the cancellation details
         const stateKey = `${employee.id}_${dateStr}`;
         
         setStatusStates(prev => ({
@@ -1243,14 +1349,17 @@ const EmployeeDashboard = () => {
             }
           }
         }));
+        
+        showSuccessMessage('Cancellation saved successfully');
       }
     } catch (error) {
-      console.error('❌ Error saving cancellation reason:', error);
+      console.error('❌ Error in cancellation save:', error);
+      showSuccessMessage(`Error saving cancellation: ${error.message}`, true);
     }
     
     setShowCancellationModal(null);
     setCancellationModalState({ reason: '', note: '' });
-  }, [showCancellationModal, employee, handleStatusStateChange, getBaseStatusId]);
+  }, [showCancellationModal, employee, handleStatusStateChange, getBaseStatusId, showSuccessMessage]);
 
   const upcomingSchedule = useMemo(() => {
     const today = new Date();

@@ -1349,18 +1349,16 @@ const CancellationDetailsModal = ({ statusId, employee, dateStr, statusName, sta
       return cancelledAt; // Return raw value if we can't parse
     }
     
-    // Format as "03 Feb 2026 12:53:35"
-    const day = date.getDate().toString().padStart(2, '0');
-    const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-    const month = monthNames[date.getMonth()];
-    const year = date.getFullYear();
-    
-    // Format time
-    const hours = date.getHours().toString().padStart(2, '0');
-    const minutes = date.getMinutes().toString().padStart(2, '0');
-    const seconds = date.getSeconds().toString().padStart(2, '0');
-    
-    return `${day} ${month} ${year} ${hours}:${minutes}:${seconds}`;
+    // Use toLocaleString for consistent timezone display
+    return date.toLocaleString('en-US', {
+      year: 'numeric',
+      month: 'short',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: false
+    });
   } catch (error) {
     console.error('❌ Error formatting cancelledAt date:', error);
     return cancelledAt || 'Unknown date'; // Return raw value
