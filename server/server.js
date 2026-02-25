@@ -90,7 +90,7 @@ app.get('/api/health', (req, res) => {
   });
 });
 
-const ALLOWED_EMAILS = ['info@pcis.group', 'se.admin@pcis.group'];
+const ALLOWED_EMAILS = ['info@pcis.group', 'se.admin@pcis.group', "mohamad.fattouh@bioteckpharm.health", "mohamad.fattouh@electra.health"];
 
 app.post('/api/auth/login', async (req, res) => {
   const { access_token, extension } = req.body;
