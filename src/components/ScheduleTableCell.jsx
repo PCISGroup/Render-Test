@@ -252,8 +252,7 @@ const saveCancellationReason = useCallback(async (statusId, reason, note = '') =
   }
 }, [employee.id, dateStr]);
 
-  // UPDATED saveState function to include reason and note
-  // UPDATED saveState function to properly handle typed client postponing
+  // UPDATED saveState function to properly handle typed client postponing and to include reason and note
 const saveState = useCallback(async (statusId, stateName, postponedDate = null, isTBA = false, reason = null, note = null) => {
   if (isSavingState) return;
 
@@ -824,19 +823,23 @@ const saveState = useCallback(async (statusId, stateName, postponedDate = null, 
               const isCancelled = state?.state === 'cancelled';
               const hasCancellationReason = isCancelled;
 
-              // Determine display text: client name and joined type names (if any)
-              const client = statusConfigs.find(s => s.id === baseId);
-              const typeNames = statusIds
-                .filter(id => typeof id === 'string' && id.includes('_type-'))
-                .map(id => {
-                  const typeId = id.split('_type-')[1];
-                  const t = scheduleTypes.find(t => t.id.toString() === typeId);
-                  return t?.type_name || `Type ${typeId}`;
-                });
+              // Determine display text for all status families (client, with employee, regular statuses)
+              let displayLabel = formatStatusDisplay(baseId, state);
 
-              const displayLabel = typeNames.length > 0
-                ? `${client?.name || 'Client'} (${typeNames.join(' - ')})`
-                : (client?.name || 'Client');
+              if (typeof baseId === 'string' && baseId.startsWith('client-')) {
+                const client = statusConfigs.find(s => s.id === baseId);
+                const typeNames = statusIds
+                  .filter(id => typeof id === 'string' && id.includes('_type-'))
+                  .map(id => {
+                    const typeId = id.split('_type-')[1];
+                    const t = scheduleTypes.find(t => t.id.toString() === typeId);
+                    return t?.type_name || `Type ${typeId}`;
+                  });
+
+                displayLabel = typeNames.length > 0
+                  ? `${client?.name || 'Client'} (${typeNames.join(' - ')})`
+                  : (client?.name || 'Client');
+              }
 
               const wrapperKey = statusIds.join('|');
 

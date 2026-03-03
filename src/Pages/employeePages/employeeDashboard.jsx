@@ -34,7 +34,7 @@ import {
   ArrowRight,
   ChevronDown
 } from "lucide-react";
-import icon from '/electra-favicon.png';
+import icon from '/pcis.png';
 import "./employeeDashboard.css";
 
 // Import DropdownContent
@@ -2537,10 +2537,10 @@ const EmployeeDashboard = () => {
           <div className="emp-sidebar-header">
             <div className="logo-container">
               <div className="logo-icon">
-                <img src={icon} alt="Electra Scheduler Logo" className="logo-image" />
+                <img src={icon} alt="PCIS Scheduler Logo" className="logo-image" />
               </div>
               <div>
-                <h2 className="app-title">Electra Scheduler</h2>
+                <h2 className="app-title">PCIS Scheduler</h2>
                 <p className="app-subtitle">Employee Dashboard</p>
               </div>
             </div>
@@ -2800,7 +2800,7 @@ const EmployeeDashboard = () => {
 
               <div className="emp-logout-modal-body">
                 <p className="emp-logout-modal-message">
-                  Are you sure you want to logout from Electra Scheduler?
+                  Are you sure you want to logout from PCIS Scheduler?
                 </p>
               </div>
 

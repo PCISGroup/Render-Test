@@ -5,7 +5,7 @@ import { query } from './db.js';
 class EmailService {
   constructor() {
     this.resend = new Resend(process.env.RESEND_API_KEY);
-    this.fromEmail = process.env.FROM_EMAIL || 'Electra Engineering <info@pcis.group>';
+    this.fromEmail = process.env.FROM_EMAIL || 'PCIS Group <info@pcis.group>';
 
     console.log('✅ Resend email service initialized');
     console.log('📧 Sender:', this.fromEmail);
@@ -40,7 +40,7 @@ class EmailService {
       const { data, error } = await this.resend.emails.send({
         from: this.fromEmail,
         to: settings.recipients,
-        subject: `Electra Engineering Daily Schedule - ${format(today, 'MMMM d, yyyy')}`,
+        subject: `PCIS Group Daily Schedule - ${format(today, 'MMMM d, yyyy')}`,
         html: emailHtml,
         text: textContent,
       });
@@ -286,7 +286,7 @@ class EmailService {
           `}
           
           <div class="footer">
-            <p>Generated automatically by Electra Engineering Schedule System</p>
+            <p>Generated automatically by PCIS Scheduler System</p>
           </div>
         </div>
       </body>
@@ -306,7 +306,7 @@ class EmailService {
       text += `${emp.name} (Ext: ${emp.ext}) - ${emp.statuses.join(' - ')}\n`;
     });
 
-    text += '\nGenerated automatically by Electra Engineering Schedule System';
+    text += '\nGenerated automatically by PCIS Scheduler System';
     return text;
   }
 }

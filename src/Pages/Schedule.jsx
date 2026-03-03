@@ -353,7 +353,7 @@ useEffect(() => {
               }
               
               if (state.status_id && state.state_name) {
-                // CRITICAL: Store state using BASE client ID (without type suffix)
+                // Store state using BASE client ID (without type suffix)
                 // This ensures state persists across type changes
                 const baseStatusId = state.status_id.startsWith('client-') 
                   ? state.status_id.split('_type-')[0]
@@ -771,7 +771,7 @@ const saveScheduleToDB = async (employeeId, dateStr, statusIds) => {
   return await response.json();
 }
 
-// ========== FIXED: DECLARE HELPER FUNCTIONS BEFORE USING THEM ==========
+// ========== DECLARE HELPER FUNCTIONS BEFORE USING THEM ==========
 
 // Add this helper function in SchedulePage.js (MUST BE BEFORE toggleStatus)
 const deleteStateFromBackend = async (employeeId, dateStr, statusId) => {
@@ -1057,8 +1057,7 @@ const toggleStatus = useCallback(async (employeeId, dateStr, statusId, selectedE
     setSaving(false);
   }
 }, [schedules, saving, saveScheduleToDB, statusConfigs, statusStates, clearCancellationReasonFromBackend, deleteStateFromBackend]);
-// In SchedulePage.js, update the removeStatus function:
-// In SchedulePage.js, replace the entire removeStatus function with this:
+
 const removeStatus = useCallback(async (employeeId, dateStr, statusId, scheduleUpdate = null) => {
   // Normalize statusId to string
   statusId = statusId != null ? String(statusId) : statusId;
@@ -1718,11 +1717,11 @@ const removeStatus = useCallback(async (employeeId, dateStr, statusId, scheduleU
               setActiveDropdown={setActiveDropdown}
               toggleStatus={toggleStatus}
               employeesData={employeesData}
-                statusStates={statusStates}
-      onStatusStateChange={handleStatusStateChange}
-       availableStates={availableStates}
-        onScheduleUpdate={handleScheduleUpdate} // ← Add this
-  refreshSchedules={refetchSchedules} // ← Add this
+              statusStates={statusStates}
+              onStatusStateChange={handleStatusStateChange}
+              availableStates={availableStates}
+              onScheduleUpdate={handleScheduleUpdate}
+              refreshSchedules={refetchSchedules} 
             />
           )}
         </div>

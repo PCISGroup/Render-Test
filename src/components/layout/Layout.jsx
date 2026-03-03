@@ -3,7 +3,7 @@ import { Link, useLocation, Outlet, useNavigate } from "react-router-dom";
 import { Users, Calendar, BarChart3, Menu, Activity, LogOut, ClipboardList } from "lucide-react";
 import { supabase } from '../../lib/supabaseClient';
 import "./Layout.css";
-import icon from '/electra-favicon.png';
+import icon from '/pcis.png';
 
 const adminNavigationItems = [
   { title: "Schedule", url: "/schedule", icon: Calendar },
@@ -91,10 +91,10 @@ export default function Layout() {
         <div className="sidebar-header">
           <div className="logo-container">
             <div className="logo-icon">
-              <img src={icon} alt="Electra Scheduler Logo" className="logo-image" />
+              <img src={icon} alt="PCIS Scheduler Logo" className="logo-image" />
             </div>
             <div>
-              <h2 className="app-title">Electra Scheduler</h2>
+              <h2 className="app-title">PCIS Scheduler</h2>
               <p className="app-subtitle">Schedule Management App</p>
             </div>
           </div>
@@ -153,7 +153,7 @@ export default function Layout() {
             >
               <Menu className="menu-icon" />
             </button>
-            <h1 className="mobile-title">Electra Scheduler</h1>
+            <h1 className="mobile-title">PCIS Scheduler</h1>
           </div>
         </header>
 
@@ -186,7 +186,7 @@ export default function Layout() {
 
             <div className="logout-modal-body">
               <p className="logout-modal-message">
-                Are you sure you want to logout from Electra Scheduler?
+                Are you sure you want to logout from PCIS Scheduler?
               </p>
             </div>
 

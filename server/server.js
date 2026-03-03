@@ -31,8 +31,7 @@ const PORT = process.env.PORT || 5001;
 
 app.use(cors({
   origin: [
-    'http://localhost:5173',
-    'https://pcisgroup.com'
+    'http://localhost:5173'
   ],
   credentials: true ,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
@@ -191,7 +190,6 @@ app.get('/api/auth/employee-by-extension', async (req, res) => {
     });
   }
 });
-
 
 async function requireSession(req, res, next) {
   console.log('🔐 requireSession checking:', req.path);
@@ -510,7 +508,7 @@ app.post('/api/schedule-state', requireSession, async (req, res) => {
         // UPDATE the existing entry to mark it as postponed
         const updateQuery = `
           UPDATE employee_schedule 
-          SET schedule_state_id = $${paramIndex}, postponed_date = NULL
+          SET schedule_state_id = $${paramIndex}, postponed_date = NULL, updated_at = CURRENT_TIMESTAMP
           WHERE ${whereClause}
           RETURNING *
         `;
@@ -667,7 +665,7 @@ app.post('/api/schedule-state', requireSession, async (req, res) => {
       // 4. For non-postponed states (completed/cancelled), update on current date
       const updateQuery = `
         UPDATE employee_schedule 
-        SET schedule_state_id = $${paramIndex}, postponed_date = NULL
+        SET schedule_state_id = $${paramIndex}, postponed_date = NULL, updated_at = CURRENT_TIMESTAMP
         WHERE ${whereClause}
         RETURNING *
       `;
@@ -1036,7 +1034,7 @@ const cancelledAt = reasonResult.rows[0].created_at;
     // 3. Update the schedule entry with cancellation reason
     const updateQuery = `
       UPDATE employee_schedule 
-      SET cancellation_reason_id = $${paramIndex}
+      SET cancellation_reason_id = $${paramIndex}, updated_at = CURRENT_TIMESTAMP
       WHERE ${whereClause}
       RETURNING *
     `;
@@ -1054,7 +1052,7 @@ const cancelledAt = reasonResult.rows[0].created_at;
           const clientNum = parseInt(clientPart.replace('client-', ''), 10);
           const fallbackQuery = `
             UPDATE employee_schedule
-            SET cancellation_reason_id = $1
+            SET cancellation_reason_id = $1, updated_at = CURRENT_TIMESTAMP
             WHERE employee_id = $2 AND date = $3 AND client_id = $4
             RETURNING *
           `;
@@ -1205,7 +1203,7 @@ app.delete('/api/schedule-state', requireSession, async (req, res) => {
       // For plain status/client, just clear the state
       query = `
         UPDATE employee_schedule 
-        SET schedule_state_id = NULL, postponed_date = NULL
+        SET schedule_state_id = NULL, postponed_date = NULL, updated_at = CURRENT_TIMESTAMP
         WHERE ${whereClause}
         RETURNING *
       `;
@@ -2214,7 +2212,20 @@ app.post('/api/clients/import', requireSession, upload.single('file'), async (re
 // Get all employees
 app.get('/api/employees', requireSession, async (req, res) => {
   try {
-    const result = await query('SELECT * FROM employees ORDER BY name');
+    const result = await query(`
+      SELECT 
+        e.*,
+        COALESCE(s.last_schedule_update, e.created_at) as last_schedule_update
+      FROM employees e
+      LEFT JOIN (
+        SELECT 
+          employee_id,
+          MAX(updated_at) as last_schedule_update
+        FROM employee_schedule
+        GROUP BY employee_id
+      ) s ON e.id = s.employee_id
+      ORDER BY last_schedule_update DESC, e.name
+    `);
     res.json(result.rows);
   } catch (err) {
     console.error('Error fetching employees:', err);
@@ -2460,7 +2471,7 @@ app.post("/api/schedule", requireSession, async (req, res) => {
             // Update the type on existing entry
             await dbClient.query(
               `UPDATE employee_schedule 
-               SET schedule_type_id = $1
+               SET schedule_type_id = $1, updated_at = CURRENT_TIMESTAMP
                WHERE id = $2`,
               [scheduleTypeId, matchingEntry.id]
             );
@@ -2498,7 +2509,7 @@ app.post("/api/schedule", requireSession, async (req, res) => {
             // Remove type from existing entry
             await dbClient.query(
               `UPDATE employee_schedule 
-               SET schedule_type_id = NULL
+               SET schedule_type_id = NULL, updated_at = CURRENT_TIMESTAMP
                WHERE id = $1`,
               [matchingEntry.id]
             );

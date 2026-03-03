@@ -17,8 +17,8 @@ const ScheduleTable = ({
   statusStates,
   onStatusStateChange,
   availableStates = [],
-  onScheduleUpdate, // NEW: Add this prop to handle schedule updates
-  refreshSchedules, // NEW: Add this prop for refreshing
+  onScheduleUpdate, 
+  refreshSchedules, 
 }) => {
   return (
     <table className="schedule-table">
