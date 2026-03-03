@@ -135,11 +135,11 @@ const AdminLogin = () => {
         <div className="login-card">
           {/* Logo */}
           <div className="login-logo">
-            <img src="/electra.png" alt="Electra Scheduler" />
+            <img src="/pcis.png" alt="PCIS Scheduler" />
           </div>
 
           {/* Title */}
-          <h1 className="login-title">Electra Scheduler</h1>
+          <h1 className="login-title">PCIS Scheduler</h1>
           <p className="login-subtitle">Employee Scheduling Platform</p>
 
           <div className="login-mode-toggle" role="group" aria-label="Login mode">
