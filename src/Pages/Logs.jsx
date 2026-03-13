@@ -22,7 +22,7 @@ import {
   Printer
 } from 'lucide-react';
 
-const API_BASE_URL = import.meta.env.VITE_API_URL;
+const API_BASE_URL = import.meta.env.VITE_API_URL || "http://localhost:5001";
 
 // 🔵 Helper function to safely parse JSON
 const safeParse = (str) => {
@@ -1144,10 +1144,12 @@ function StatsOverview({ logs, hasFilters }) {
 
 // 🔵 Main LogsPage component
 export default function LogsPage() {
+  const LOGS_PER_PAGE = 50;
   const [logs, setLogs] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [nameCache, setNameCache] = useState({});
+  const [currentPage, setCurrentPage] = useState(1);
   const [filters, setFilters] = useState({
     action: '',
     table: '',
@@ -1158,6 +1160,7 @@ export default function LogsPage() {
   // Handle filter changes
   const handleFilterChange = useCallback((newFilters) => {
     setFilters(prev => ({ ...prev, ...newFilters }));
+    setCurrentPage(1);
   }, []);
 
   const handleClearFilters = useCallback(() => {
@@ -1167,6 +1170,7 @@ export default function LogsPage() {
       user: '',
       timeRange: ''
     });
+    setCurrentPage(1);
   }, []);
 
   // Extract IDs from logs to fetch names
@@ -1389,6 +1393,22 @@ export default function LogsPage() {
     );
   }, [logs, filters]);
 
+  const totalPages = Math.max(1, Math.ceil(filteredLogs.length / LOGS_PER_PAGE));
+  const activePage = Math.min(currentPage, totalPages);
+  const pageStartIndex = filteredLogs.length === 0 ? 0 : (activePage - 1) * LOGS_PER_PAGE + 1;
+  const pageEndIndex = Math.min(activePage * LOGS_PER_PAGE, filteredLogs.length);
+
+  useEffect(() => {
+    if (currentPage !== activePage) {
+      setCurrentPage(activePage);
+    }
+  }, [currentPage, activePage]);
+
+  const paginatedLogs = useMemo(() => {
+    const start = (activePage - 1) * LOGS_PER_PAGE;
+    return filteredLogs.slice(start, start + LOGS_PER_PAGE);
+  }, [filteredLogs, activePage]);
+
   // Handle export
   const handleExportCSV = useCallback(() => {
     try {
@@ -1519,7 +1539,7 @@ if (loading) {
           </div>
         ) : (
           <div className="logs-list">
-            {filteredLogs.map(log => (
+            {paginatedLogs.map(log => (
               <LogCard 
                 key={`${log.id}-${log.created_at}`} 
                 log={log} 
@@ -1530,11 +1550,33 @@ if (loading) {
         )}
       </div>
 
+      {filteredLogs.length > 0 && (
+        <div className="pagination-controls">
+          <button
+            onClick={() => setCurrentPage(prev => Math.max(prev - 1, 1))}
+            className="pagination-btn"
+            disabled={activePage === 1}
+          >
+            Previous
+          </button>
+          <div className="pagination-info">
+            Page {activePage} of {totalPages} · Showing {pageStartIndex}-{pageEndIndex} of {filteredLogs.length}
+          </div>
+          <button
+            onClick={() => setCurrentPage(prev => Math.min(prev + 1, totalPages))}
+            className="pagination-btn"
+            disabled={activePage === totalPages}
+          >
+            Next
+          </button>
+        </div>
+      )}
+
       {/* Export Section */}
       {filteredLogs.length > 0 && (
         <div className="export-section">
           <div className="export-info">
-            {filteredLogs.length} of {logs.length} logs displayed
+            {pageStartIndex}-{pageEndIndex} of {filteredLogs.length} logs displayed
           </div>
           <div className="export-buttons">
             <button onClick={handleExportCSV} className="export-btn export-csv">
@@ -1788,6 +1830,48 @@ if (loading) {
           display: flex;
           flex-direction: column;
           gap: 16px;
+        }
+
+        .pagination-controls {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 12px;
+          margin-bottom: 24px;
+          background: white;
+          border: 1px solid #e2e8f0;
+          border-radius: 12px;
+          padding: 12px 16px;
+        }
+
+        .pagination-info {
+          font-size: 14px;
+          color: #64748b;
+          text-align: center;
+          flex: 1;
+        }
+
+        .pagination-btn {
+          padding: 8px 14px;
+          background: white;
+          border: 1px solid #cbd5e1;
+          border-radius: 8px;
+          font-size: 14px;
+          font-weight: 500;
+          color: #475569;
+          cursor: pointer;
+          transition: all 0.2s;
+          min-width: 90px;
+        }
+
+        .pagination-btn:hover:not(:disabled) {
+          background: #f8fafc;
+          border-color: #94a3b8;
+        }
+
+        .pagination-btn:disabled {
+          opacity: 0.5;
+          cursor: not-allowed;
         }
 
         /* Log card */
@@ -2227,6 +2311,10 @@ if (loading) {
           }
           
           .export-section {
+            display: none;
+          }
+
+          .pagination-controls {
             display: none;
           }
           
