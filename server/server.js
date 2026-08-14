@@ -459,24 +459,32 @@ app.post('/api/schedule-state', requireSession, async (req, res) => {
         whereClause += ` AND status_id IS NULL AND with_employee_id IS NULL`;
         
       } else {
+        // Plain client id (no _type- suffix): the frontend strips the type
+        // suffix intentionally so a state applies to the client regardless of
+        // which schedule-type variant is currently on the calendar. Match on
+        // client_id alone (not schedule_type_id IS NULL) - otherwise a typed
+        // entry (schedule_type_id NOT NULL) is missed here, and the fallback
+        // "no existing entry" path below creates a duplicate untyped row that
+        // later gets deleted as "orphaned" by POST /api/schedule, wiping the
+        // state and mislogging it as a removal.
         const clientNum = parseInt(statusId.replace('client-', ''), 10);
         whereClause += ` AND client_id = $${paramIndex}`;
         params.push(clientNum);
         paramIndex++;
-        whereClause += ` AND status_id IS NULL AND with_employee_id IS NULL AND schedule_type_id IS NULL`;
+        whereClause += ` AND status_id IS NULL AND with_employee_id IS NULL`;
       }
     } else if (statusId.startsWith('with_')) {
       const parts = statusId.split('_');
       if (parts.length >= 3) {
         const withEmployeeId = parseInt(parts[1], 10);
         const statusPart = parts[2];
-        
+
         if (statusPart.startsWith('status-')) {
           const statusNum = parseInt(statusPart.replace('status-', ''), 10);
           whereClause += ` AND with_employee_id = $${paramIndex}`;
           params.push(withEmployeeId);
           paramIndex++;
-          
+
           whereClause += ` AND status_id = $${paramIndex}`;
           params.push(statusNum);
           paramIndex++;
@@ -484,7 +492,7 @@ app.post('/api/schedule-state', requireSession, async (req, res) => {
         }
       }
     }
-    
+
     // 2. Get or create schedule state
     let scheduleStateId = null;
     
@@ -1191,12 +1199,15 @@ app.delete('/api/schedule-state', requireSession, async (req, res) => {
         paramIndex++;
         whereClause += ` AND status_id IS NULL AND with_employee_id IS NULL`;
       } else {
-        // Plain client: just clear the state
+        // Plain client id (no _type- suffix): match on client_id alone, not
+        // schedule_type_id IS NULL - see the matching comment in
+        // POST /api/schedule-state for why requiring a null type here misses
+        // typed rows entirely.
         const clientNum = parseInt(statusId.replace('client-', ''), 10);
         whereClause += ` AND client_id = $${paramIndex}`;
         params.push(clientNum);
         paramIndex++;
-        whereClause += ` AND status_id IS NULL AND with_employee_id IS NULL AND schedule_type_id IS NULL`;
+        whereClause += ` AND status_id IS NULL AND with_employee_id IS NULL`;
       }
     } else if (statusId.startsWith('with_')) {
       const parts = statusId.split('_');
