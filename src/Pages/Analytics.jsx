@@ -959,7 +959,7 @@ const renderStateIcon = (state) => {
       });
     }
 
-    return Array.from(map.values());
+    return Array.from(map.values()).sort((a, b) => b.date.localeCompare(a.date));
   }, [filteredResults]);
 
   const totalPages = Math.ceil(groupedResults.length / itemsPerPage);
