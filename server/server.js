@@ -1355,16 +1355,17 @@ app.get('/api/combined-options', async (req, res) => {
     
     // Get clients (with location info)
     const clientsResult = await query(`
-      SELECT 
-        c.id, 
-        c.name, 
+      SELECT
+        c.id,
+        c.name,
         c.color,
         'client' as type,
         c.location_id,
         l.city_name,
-        l.region
+        r.name AS region
       FROM clients c
       LEFT JOIN locations l ON c.location_id = l.id
+      LEFT JOIN regions r ON c.region_id = r.id
       ORDER BY c.name
     `);
     
@@ -1520,16 +1521,33 @@ app.delete('/api/statuses/:id', requireSession, async (req, res) => {
   }
 });
 
+// Get all locations (used to populate location/region pickers for clients)
+app.get('/api/locations', requireSession, async (req, res) => {
+  try {
+    const result = await query(`
+      SELECT l.id, l.city_name, r.name AS region
+      FROM locations l
+      LEFT JOIN regions r ON l.region_id = r.id
+      ORDER BY r.name, l.city_name
+    `);
+    res.json(result.rows);
+  } catch (err) {
+    console.error('Error fetching locations:', err);
+    res.status(500).json({ error: 'Failed to fetch locations' });
+  }
+});
+
 // Get all clients
 app.get('/api/clients', requireSession, async (req, res) => {
   try {
     const result = await query(`
-      SELECT 
+      SELECT
         c.*,
         l.city_name,
-        l.region
+        r.name AS region
       FROM clients c
       LEFT JOIN locations l ON c.location_id = l.id
+      LEFT JOIN regions r ON c.region_id = r.id
       ORDER BY c.name
     `);
     res.json(result.rows);
@@ -1543,15 +1561,26 @@ app.get('/api/clients', requireSession, async (req, res) => {
 // Create new client
 app.post('/api/clients', requireSession, async (req, res) => {
   try {
-    const { name, location_id, color } = req.body;
+    const { name, location_id, region, color } = req.body;
 
     if (!name || !name.trim()) {
       return res.status(400).json({ error: 'Client name is required' });
     }
+    if (!region || !region.trim()) {
+      return res.status(400).json({ error: 'Region is required' });
+    }
+
+    const regionResult = await query(
+      'SELECT id FROM regions WHERE name = $1',
+      [region.trim()]
+    );
+    if (regionResult.rows.length === 0) {
+      return res.status(400).json({ error: 'Invalid region selected' });
+    }
 
     const result = await query(
-      'INSERT INTO clients (name, location_id, color) VALUES ($1, $2, $3) RETURNING *',
-      [name.trim(), location_id, color || '#2196F3'] // Default blue color
+      'INSERT INTO clients (name, location_id, region_id, color) VALUES ($1, $2, $3, $4) RETURNING *',
+      [name.trim(), location_id || null, regionResult.rows[0].id, color || '#2196F3'] // Default blue color
     );
 
     res.status(201).json(result.rows[0]);
@@ -1572,18 +1601,29 @@ app.post('/api/clients', requireSession, async (req, res) => {
 app.put('/api/clients/:id', requireSession, async (req, res) => {
   try {
     const { id } = req.params;
-    const { name, location_id, color } = req.body;
+    const { name, location_id, region, color } = req.body;
 
     if (!name || !name.trim()) {
       return res.status(400).json({ error: 'Client name is required' });
     }
+    if (!region || !region.trim()) {
+      return res.status(400).json({ error: 'Region is required' });
+    }
+
+    const regionResult = await query(
+      'SELECT id FROM regions WHERE name = $1',
+      [region.trim()]
+    );
+    if (regionResult.rows.length === 0) {
+      return res.status(400).json({ error: 'Invalid region selected' });
+    }
 
     const result = await query(
-      `UPDATE clients 
-       SET name = $1, location_id = $2, color = $3, updated_at = CURRENT_TIMESTAMP
-       WHERE id = $4 
+      `UPDATE clients
+       SET name = $1, location_id = $2, region_id = $3, color = $4, updated_at = CURRENT_TIMESTAMP
+       WHERE id = $5
        RETURNING *`,
-      [name.trim(), location_id, color || '#2196F3', id]
+      [name.trim(), location_id || null, regionResult.rows[0].id, color || '#2196F3', id]
     );
 
     if (result.rows.length === 0) {
@@ -1660,12 +1700,13 @@ app.get('/api/clients/by-location/:location_id', requireSession, async (req, res
     const { location_id } = req.params;
     
     const result = await query(`
-      SELECT 
+      SELECT
         c.*,
         l.city_name,
-        l.region
+        r.name AS region
       FROM clients c
       LEFT JOIN locations l ON c.location_id = l.id
+      LEFT JOIN regions r ON c.region_id = r.id
       WHERE c.location_id = $1
       ORDER BY c.name
     `, [location_id]);

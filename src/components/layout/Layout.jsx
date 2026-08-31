@@ -9,7 +9,7 @@ const adminNavigationItems = [
   { title: "Schedule", url: "/schedule", icon: Calendar },
   { title: "Employees", url: "/employees", icon: Users },
   { title: "Analytics", url: "/analytics", icon: BarChart3 },
-  { title: "Status", url: "/status", icon: Activity },
+  { title: "Status & Clients", url: "/status", icon: Activity },
   { title: "Logs", url: "/logs", icon: ClipboardList },
 ];
 

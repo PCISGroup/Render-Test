@@ -1,11 +1,13 @@
 import React, { useEffect, useState } from "react";
-import { Plus, Trash2, Pencil, X, Activity, Palette, Upload, Download, FileText } from "lucide-react";
-import { supabase } from '../lib/supabaseClient'; 
+import { Plus, Trash2, Pencil, X, Activity, Palette, Upload, Download, FileText, Users, MapPin } from "lucide-react";
+import { supabase } from '../lib/supabaseClient';
 import "./Status.css";
 
 const API_BASE = import.meta.env.VITE_API_URL;
 
 export default function StatusPage() {
+  const [activeTab, setActiveTab] = useState('status'); // 'status' | 'clients'
+
   const [statuses, setStatuses] = useState([]);
   const [newLabel, setNewLabel] = useState("");
   const [newColor, setNewColor] = useState("");
@@ -23,6 +25,17 @@ export default function StatusPage() {
   const [fileColumns, setFileColumns] = useState([]);
   const [currentPage, setCurrentPage] = useState(1);
   const [itemsPerPage] = useState(50);
+
+  // --- Clients state ---
+  const [clients, setClients] = useState([]);
+  const [locations, setLocations] = useState([]);
+  const [showClientForm, setShowClientForm] = useState(false);
+  const [editingClientId, setEditingClientId] = useState(null);
+  const [newClientName, setNewClientName] = useState("");
+  const [newClientRegion, setNewClientRegion] = useState("");
+  const [newClientLocationId, setNewClientLocationId] = useState("");
+  const [showDeleteClientModal, setShowDeleteClientModal] = useState(false);
+  const [clientToDelete, setClientToDelete] = useState(null);
 
   // --- Helper function to add authorization header ---
   const authFetch = async (url, options = {}) => {
@@ -52,7 +65,16 @@ export default function StatusPage() {
       setShowDeleteModal(false);
       setStatusToDelete(null);
     }
-  }, [error, showDeleteModal]);
+    if (error && showDeleteClientModal) {
+      setShowDeleteClientModal(false);
+      setClientToDelete(null);
+    }
+  }, [error, showDeleteModal, showDeleteClientModal]);
+
+  // Reset pagination when switching tabs
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [activeTab]);
 
   // Fetch statuses from backend
   const fetchStatuses = async () => {
@@ -60,34 +82,38 @@ export default function StatusPage() {
     setError("");
 
     try {
-      console.log("📡 Fetching data...");
-
-      // Fetch statuses (returns {success: true, data: [...]})
-      const statusRes = await authFetch('/api/statuses'); // Use authFetch
+      const statusRes = await authFetch('/api/statuses');
       const statusJson = await statusRes.json();
-      console.log("Status API response:", statusJson);
 
-      // Fetch clients (returns array directly [...])
-      const clientRes = await authFetch('/api/clients'); // Use authFetch
-      const clientJson = await clientRes.json(); 
-      console.log("Client API response:", clientJson);
-
-      // SAFE EXTRACTION: Handle different response formats
       let statusArray = [];
-      let clientArray = [];
-      
-      // Extract status array
       if (Array.isArray(statusJson)) {
         statusArray = statusJson;
       } else if (statusJson?.data && Array.isArray(statusJson.data)) {
         statusArray = statusJson.data;
       } else if (statusJson && typeof statusJson === 'object') {
-        // Try to extract any array from the object
         const possibleArrays = Object.values(statusJson).filter(val => Array.isArray(val));
         statusArray = possibleArrays.length > 0 ? possibleArrays[0] : [];
       }
-      
-      // Extract client array
+
+      setStatuses(statusArray);
+    } catch (err) {
+      console.error("❌ Fetch statuses error:", err);
+      setError(`Failed to load statuses: ${err.message}`);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Fetch clients from backend
+  const fetchClients = async () => {
+    setLoading(true);
+    setError("");
+
+    try {
+      const clientRes = await authFetch('/api/clients');
+      const clientJson = await clientRes.json();
+
+      let clientArray = [];
       if (Array.isArray(clientJson)) {
         clientArray = clientJson;
       } else if (clientJson?.data && Array.isArray(clientJson.data)) {
@@ -97,56 +123,43 @@ export default function StatusPage() {
         clientArray = possibleArrays.length > 0 ? possibleArrays[0] : [];
       }
 
-      console.log("Status count:", statusArray.length, "Client count:", clientArray.length);
-      console.log("Status sample:", statusArray.slice(0, 2));
-      console.log("Client sample:", clientArray.slice(0, 2));
-
-      // Combine with unique keys
-      const combined = [
-        // Statuses
-        ...statusArray.map(item => ({
-          ...item,
-          id: item.id || `status-${Math.random()}`,
-          name: item.label || item.name || 'Unknown',
-          type: 'status',
-          unique_key: `status-${item.id || Math.random()}`
-        })),
-        // Clients
-        ...clientArray.map(item => ({
-          ...item,
-          id: item.id || `client-${Math.random()}`,
-          name: item.name || 'Unknown',
-          type: 'client',
-          unique_key: `client-${item.id || Math.random()}`
-        }))
-      ];
-
-      console.log("✅ Combined total:", combined.length, "items");
-
-      // Check counts
-      const statusCount = combined.filter(item => item.type === 'status').length;
-      const clientCount = combined.filter(item => item.type === 'client').length;
-      console.log(`📊 Breakdown: ${statusCount} statuses, ${clientCount} clients`);
-
-      setStatuses(combined);
-
+      setClients(clientArray);
     } catch (err) {
-      console.error("❌ Fetch error:", err);
-      setError(`Failed to load data: ${err.message}`);
+      console.error("❌ Fetch clients error:", err);
+      setError(`Failed to load clients: ${err.message}`);
     } finally {
       setLoading(false);
     }
   };
 
+  // Fetch locations (for the client location/region pickers)
+  const fetchLocations = async () => {
+    try {
+      const res = await authFetch('/api/locations');
+      const json = await res.json();
+      setLocations(Array.isArray(json) ? json : []);
+    } catch (err) {
+      console.error("❌ Fetch locations error:", err);
+    }
+  };
+
   useEffect(() => {
     fetchStatuses();
+    fetchClients();
+    fetchLocations();
   }, []);
 
-  // Pagination
+  // Regions that actually exist in the DB (derived from locations, never free-typed)
+  const availableRegions = [...new Set(locations.map(l => l.region).filter(Boolean))].sort();
+
+  // Pagination (applies to whichever tab is active)
+  const activeList = activeTab === 'status' ? statuses : clients;
   const indexOfLastItem = currentPage * itemsPerPage;
   const indexOfFirstItem = indexOfLastItem - itemsPerPage;
-  const currentStatuses = statuses.slice(indexOfFirstItem, indexOfLastItem);
-  const totalPages = Math.ceil(statuses.length / itemsPerPage);
+  const currentPageItems = activeList.slice(indexOfFirstItem, indexOfLastItem);
+  const currentStatuses = activeTab === 'status' ? currentPageItems : [];
+  const currentClients = activeTab === 'clients' ? currentPageItems : [];
+  const totalPages = Math.ceil(activeList.length / itemsPerPage);
 
   // Pagination functions
   const goToPrevious = () => {
@@ -237,6 +250,102 @@ export default function StatusPage() {
     } finally {
       setLoading(false);
     }
+  };
+
+  // Add or Edit client
+  const handleClientSave = async (e) => {
+    e.preventDefault();
+    if (!newClientName.trim()) {
+      setError("Please enter a client name");
+      return;
+    }
+    if (!newClientRegion) {
+      setError("Please select a region");
+      return;
+    }
+
+    setLoading(true);
+    setError("");
+
+    try {
+      const clientData = {
+        name: newClientName.trim(),
+        region: newClientRegion,
+        location_id: newClientLocationId || null,
+      };
+
+      let res;
+      if (editingClientId) {
+        res = await authFetch(`/api/clients/${editingClientId}`, {
+          method: "PUT",
+          body: JSON.stringify(clientData),
+        });
+      } else {
+        res = await authFetch('/api/clients', {
+          method: "POST",
+          body: JSON.stringify(clientData),
+        });
+      }
+
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to save client");
+
+      cancelClientForm();
+      fetchClients();
+    } catch (err) {
+      console.error("Failed to save client:", err);
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Delete a client
+  const handleClientDelete = async (id) => {
+    setLoading(true);
+    setError("");
+    try {
+      const res = await authFetch(`/api/clients/${id}`, {
+        method: "DELETE"
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to delete client");
+
+      fetchClients();
+      setShowDeleteClientModal(false);
+      setClientToDelete(null);
+    } catch (err) {
+      console.error("Failed to delete client:", err);
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Open delete confirmation for a client
+  const openDeleteClientConfirmation = (client) => {
+    setError("");
+    setClientToDelete(client);
+    setShowDeleteClientModal(true);
+  };
+
+  // Start editing a client
+  const startEditingClient = (client) => {
+    setError("");
+    setEditingClientId(client.id);
+    setNewClientName(client.name);
+    setNewClientRegion(client.region || "");
+    setNewClientLocationId(client.location_id ? String(client.location_id) : "");
+    setShowClientForm(true);
+  };
+
+  // Cancel client form
+  const cancelClientForm = () => {
+    setShowClientForm(false);
+    setEditingClientId(null);
+    setNewClientName("");
+    setNewClientRegion("");
+    setNewClientLocationId("");
   };
 
   // Handle file selection
@@ -405,7 +514,7 @@ export default function StatusPage() {
       setError(`✅ ${data.message}`);
       setTimeout(() => setError(""), 5000);
 
-      fetchStatuses();
+      fetchClients();
 
     } catch (err) {
       console.error("Import failed:", err);
@@ -477,12 +586,44 @@ export default function StatusPage() {
     <div className="status-page">
       <div className="page-header">
         <div className="title-section">
-          <Activity size={40} className="title-icon" />
+          {activeTab === 'status' ? (
+            <Activity size={40} className="title-icon" />
+          ) : (
+            <Users size={40} className="title-icon" />
+          )}
           <div>
-            <h1>Status Management</h1>
-            <p>Create, view, and manage work statuses</p>
+            <h1>Status & Clients</h1>
+            <p>
+              {activeTab === 'status'
+                ? "Create, view, and manage work statuses"
+                : "Add, view, and manage clients with their location and region"}
+            </p>
           </div>
         </div>
+      </div>
+
+      {/* Tab Toggle */}
+      <div className="status-view-toggle" role="tablist">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={activeTab === 'status'}
+          className={`status-view-tab ${activeTab === 'status' ? 'active' : ''}`}
+          onClick={() => { setActiveTab('status'); setError(""); }}
+        >
+          <Activity size={16} />
+          Statuses
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={activeTab === 'clients'}
+          className={`status-view-tab ${activeTab === 'clients' ? 'active' : ''}`}
+          onClick={() => { setActiveTab('clients'); setError(""); }}
+        >
+          <Users size={16} />
+          Clients
+        </button>
       </div>
 
       {/* Error Message */}
@@ -540,7 +681,7 @@ export default function StatusPage() {
       )}
 
       {/* Add/Edit Status Form */}
-      {showForm && (
+      {activeTab === 'status' && showForm && (
         <form className="status-form" onSubmit={handleSave}>
           <div className="form-group">
             <label htmlFor="status-label">Status Label</label>
@@ -629,39 +770,134 @@ export default function StatusPage() {
         </form>
       )}
 
-      {/* Section header with Import button */}
-      <div className="section-header">
-        <h2>Statuses & Clients ({statuses.length})</h2>
-        <div className="header-actions">
-          <button
-            className="import-btn"
-            onClick={() => setShowImportModal(true)}
-            title="Import clients from file"
-          >
-            <Upload size={16} />
-            Import Clients
-          </button>
-          <button
-            className="add-status-btn"
-            onClick={() => {
-              setError("");
-              setShowForm(!showForm);
-              if (!showForm) {
-                setEditingId(null);
-                setNewLabel("");
-                setNewColor("");
-                setShowColorPicker(false);
-              }
-            }}
-          >
-            {showForm ? <X size={16} /> : <Plus size={16} />}
-            {showForm ? "Cancel" : "Add Status"}
-          </button>
+      {/* Section header */}
+      {activeTab === 'status' ? (
+        <div className="section-header">
+          <h2>Statuses ({statuses.length})</h2>
+          <div className="header-actions">
+            <button
+              className="add-status-btn"
+              onClick={() => {
+                setError("");
+                setShowForm(!showForm);
+                if (!showForm) {
+                  setEditingId(null);
+                  setNewLabel("");
+                  setNewColor("");
+                  setShowColorPicker(false);
+                }
+              }}
+            >
+              {showForm ? <X size={16} /> : <Plus size={16} />}
+              {showForm ? "Cancel" : "Add Status"}
+            </button>
+          </div>
         </div>
-      </div>
+      ) : (
+        <div className="section-header">
+          <h2>Clients ({clients.length})</h2>
+          <div className="header-actions">
+            <button
+              className="import-btn"
+              onClick={() => setShowImportModal(true)}
+              title="Import clients from file"
+            >
+              <Upload size={16} />
+              Import Clients
+            </button>
+            <button
+              className="add-status-btn"
+              onClick={() => {
+                setError("");
+                if (showClientForm) {
+                  cancelClientForm();
+                } else {
+                  setEditingClientId(null);
+                  setNewClientName("");
+                  setNewClientRegion("");
+                  setNewClientLocationId("");
+                  setShowClientForm(true);
+                }
+              }}
+            >
+              {showClientForm ? <X size={16} /> : <Plus size={16} />}
+              {showClientForm ? "Cancel" : "Add Client"}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Add/Edit Client Form */}
+      {activeTab === 'clients' && showClientForm && (
+        <form className="status-form" onSubmit={handleClientSave}>
+          <div className="form-group">
+            <label htmlFor="client-name">Client Name</label>
+            <input
+              id="client-name"
+              type="text"
+              placeholder="e.g. Acme Corp"
+              value={newClientName}
+              onChange={(e) => setNewClientName(e.target.value)}
+              required
+            />
+          </div>
+
+          <div className="form-group">
+            <label htmlFor="client-region">Region</label>
+            <select
+              id="client-region"
+              value={newClientRegion}
+              onChange={(e) => {
+                setNewClientRegion(e.target.value);
+                setNewClientLocationId("");
+              }}
+              className="client-form-select"
+              required
+            >
+              <option value="">Select a region</option>
+              {availableRegions.map((region) => (
+                <option key={region} value={region}>{region}</option>
+              ))}
+            </select>
+            <p className="color-toggle-description">
+              Regions come from the locations already set up in the database.
+            </p>
+          </div>
+
+          <div className="form-group">
+            <label htmlFor="client-location">Location (optional)</label>
+            <select
+              id="client-location"
+              value={newClientLocationId}
+              onChange={(e) => setNewClientLocationId(e.target.value)}
+              className="client-form-select"
+              disabled={!newClientRegion}
+            >
+              <option value="">
+                {newClientRegion ? "No specific location" : "Select a region first"}
+              </option>
+              {locations
+                .filter((l) => l.region === newClientRegion)
+                .map((l) => (
+                  <option key={l.id} value={l.id}>{l.city_name}</option>
+                ))}
+            </select>
+          </div>
+
+          <div className="form-actions">
+            <button type="submit" className="save-btn" disabled={loading}>
+              {editingClientId ? "Update Client" : "Save Client"}
+            </button>
+            <button type="button" className="cancel-btn" onClick={cancelClientForm}>
+              <X size={16} />
+              Cancel
+            </button>
+          </div>
+        </form>
+      )}
 
       {/* Status Table */}
-      {!loading && (
+      {!loading && activeTab === 'status' && (
         <div className="section">
           <div className="status-table-container">
             <table className="status-table">
@@ -674,16 +910,15 @@ export default function StatusPage() {
               <tbody>
                 {currentStatuses.length === 0 ? (
                   <tr>
-                    <td colSpan="2" className="empty">No items found</td>
+                    <td colSpan="2" className="empty">No statuses found</td>
                   </tr>
                 ) : (
                   currentStatuses.map((item) => (
-                    <tr key={item.unique_key || item.id}>
+                    <tr key={item.id}>
                       <td className="status-label-cell">
                         <div className="status-name-with-color">
-                          {/* FIXED: Show name OR label */}
                           <span className="status-label">
-                            {item.name || item.label || 'No name'}
+                            {item.label || item.name || 'No name'}
                           </span>
                           {item.color && (
                             <span
@@ -695,29 +930,90 @@ export default function StatusPage() {
                         </div>
                       </td>
                       <td className="status-actions">
-                        {/* Only show edit/delete for statuses */}
-                        {item.type === 'status' ? (
-                          <>
-                            <button
-                              className="action-btn edit"
-                              onClick={() => startEditing(item)}
-                              title="Edit status"
-                            >
-                              <Pencil size={14} />
-                              <span>Edit</span>
-                            </button>
-                            <button
-                              className="action-btn delete"
-                              onClick={() => openDeleteConfirmation(item)}
-                              title="Delete status"
-                            >
-                              <Trash2 size={14} />
-                              <span>Delete</span>
-                            </button>
-                          </>
+                        <button
+                          className="action-btn edit"
+                          onClick={() => startEditing(item)}
+                          title="Edit status"
+                        >
+                          <Pencil size={14} />
+                          <span>Edit</span>
+                        </button>
+                        <button
+                          className="action-btn delete"
+                          onClick={() => openDeleteConfirmation(item)}
+                          title="Delete status"
+                        >
+                          <Trash2 size={14} />
+                          <span>Delete</span>
+                        </button>
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* Client Table */}
+      {!loading && activeTab === 'clients' && (
+        <div className="section">
+          <div className="status-table-container client-table-container">
+            <table className="status-table client-table">
+              <thead>
+                <tr>
+                  <th>Client</th>
+                  <th>Location</th>
+                  <th>Region</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {currentClients.length === 0 ? (
+                  <tr>
+                    <td colSpan="4" className="empty">No clients found</td>
+                  </tr>
+                ) : (
+                  currentClients.map((client) => (
+                    <tr key={client.id}>
+                      <td className="status-label-cell" data-label="Client">
+                        <span className="status-label">{client.name}</span>
+                      </td>
+                      <td data-label="Location">
+                        {client.city_name ? (
+                          <span className="location-cell">
+                            <MapPin size={14} />
+                            {client.city_name}
+                          </span>
                         ) : (
-                          <span className="text-muted">Client (read-only)</span>
+                          <span className="text-muted">—</span>
                         )}
+                      </td>
+                      <td data-label="Region">
+                        {client.region ? (
+                          <span className="region-chip">{client.region}</span>
+                        ) : (
+                          <span className="text-muted">—</span>
+                        )}
+                      </td>
+                      <td className="status-actions" data-label="Actions">
+                        <button
+                          className="action-btn edit"
+                          onClick={() => startEditingClient(client)}
+                          title="Edit client"
+                        >
+                          <Pencil size={14} />
+                          <span>Edit</span>
+                        </button>
+                        <button
+                          className="action-btn delete"
+                          onClick={() => openDeleteClientConfirmation(client)}
+                          title="Delete client"
+                        >
+                          <Trash2 size={14} />
+                          <span>Delete</span>
+                        </button>
                       </td>
                     </tr>
                   ))
@@ -729,10 +1025,10 @@ export default function StatusPage() {
       )}
 
       {/* Pagination - Now completely outside the table section */}
-      {!loading && statuses.length > itemsPerPage && (
+      {!loading && activeList.length > itemsPerPage && (
         <div className="pagination-section">
           <div className="pagination-info">
-            Records {startIndex + 1}-{Math.min(endIndex, statuses.length)} out of {statuses.length}
+            Records {startIndex + 1}-{Math.min(endIndex, activeList.length)} out of {activeList.length}
           </div>
           <div className="pagination-controls">
             <button
@@ -820,6 +1116,57 @@ export default function StatusPage() {
                 disabled={loading}
               >
                 Delete Status
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Delete Client Confirmation Modal */}
+      {showDeleteClientModal && (
+        <div className="modal-overlay">
+          <div className="modal-content">
+            <div className="modal-header">
+              <h3>Delete Client</h3>
+              <button
+                className="modal-close"
+                onClick={() => {
+                  setShowDeleteClientModal(false);
+                  setClientToDelete(null);
+                }}
+              >
+                <X size={20} />
+              </button>
+            </div>
+            <div className="modal-body">
+              <div className="modal-icon">
+                <div className="warning-circle">
+                  <Trash2 size={24} color="#dc2626" />
+                </div>
+              </div>
+              <p>
+                Are you sure you want to delete <strong>{clientToDelete?.name}</strong>?
+              </p>
+              <p className="warning-text">
+                This action cannot be undone. Clients used in schedules or with machines installed cannot be deleted.
+              </p>
+            </div>
+            <div className="modal-actions">
+              <button
+                className="cancel-btn"
+                onClick={() => {
+                  setShowDeleteClientModal(false);
+                  setClientToDelete(null);
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                className="delete-confirm-btn"
+                onClick={() => handleClientDelete(clientToDelete.id)}
+                disabled={loading}
+              >
+                Delete Client
               </button>
             </div>
           </div>

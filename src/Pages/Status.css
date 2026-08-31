@@ -37,6 +37,165 @@
   font-size: 16px;
 }
 
+/* Tab Toggle */
+.status-view-toggle {
+  display: inline-flex;
+  gap: 4px;
+  background: #f3f4f6;
+  border: 1px solid #e1e5e9;
+  border-radius: 8px;
+  padding: 4px;
+  margin-bottom: 24px;
+}
+
+.status-view-tab {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 18px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: #6b7280;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.status-view-tab:hover {
+  color: #374151;
+}
+
+.status-view-tab.active {
+  background: white;
+  color: #2563eb;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+/* Location / Region cells (Clients tab) */
+.location-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: #374151;
+}
+
+.region-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 10px;
+  border-radius: 12px;
+  background: #eff6ff;
+  color: #2563eb;
+  border: 1px solid #bfdbfe;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.text-muted {
+  color: #9ca3af;
+}
+
+/* Client form selects (separate from .column-select so the import modal's
+   column picker is unaffected) */
+.client-form-select {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 10px 12px;
+  border: 1px solid #d0d7de;
+  border-radius: 6px;
+  font-size: 14px;
+  background-color: white;
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24' stroke='%236b7280'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='M19 9l-7 7-7-7'%3E%3C/path%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 12px center;
+  background-size: 16px;
+  transition: border-color 0.2s;
+}
+
+.client-form-select:focus {
+  outline: none;
+  border-color: #2563eb;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
+}
+
+.client-form-select:disabled {
+  background-color: #f3f4f6;
+  color: #9ca3af;
+  cursor: not-allowed;
+}
+
+/* Client table: horizontal-scroll safety net, plus a stacked card layout
+   on narrow screens (scoped to .client-table so the Statuses tab and other
+   pages that also use .status-table / .action-btn are unaffected) */
+.client-table-container {
+  overflow-x: auto;
+}
+
+@media (max-width: 640px) {
+  .client-table thead {
+    display: none;
+  }
+
+  .client-table,
+  .client-table tbody,
+  .client-table tr,
+  .client-table td {
+    display: block;
+    width: 100%;
+  }
+
+  .client-table tr {
+    padding: 14px 20px;
+    border-bottom: 1px solid #f3f4f6;
+  }
+
+  .client-table tr:last-child {
+    border-bottom: none;
+  }
+
+  .client-table td {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 6px 0 !important;
+    border: none !important;
+  }
+
+  .client-table td::before {
+    content: attr(data-label);
+    flex-shrink: 0;
+    font-size: 11px;
+    font-weight: 700;
+    color: #9ca3af;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+  }
+
+  .client-table td.status-actions {
+    justify-content: flex-start;
+    gap: 8px;
+    padding-top: 12px !important;
+  }
+
+  .client-table td.status-actions::before {
+    display: none;
+  }
+
+  .client-table td.empty {
+    display: block;
+    text-align: center;
+    padding: 40px !important;
+  }
+
+  .client-table td.empty::before {
+    display: none;
+  }
+}
+
 /* Section header */
 .section-header {
   display: flex;

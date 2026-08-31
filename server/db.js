@@ -203,6 +203,96 @@ export async function initDB() {
       );
     `);
 
+    // Regions lookup table, seeded from the distinct values already in
+    // locations.region (read here while that column still exists as text -
+    // see the locations migration right below, which normalizes it away).
+    // This table is the single source of truth every other table points at
+    // by id, instead of duplicating the region name as free text.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS regions (
+        id SERIAL PRIMARY KEY,
+        name VARCHAR(50) UNIQUE NOT NULL
+      );
+    `);
+
+    // Guarded: only seeds while locations.region still exists as text. On
+    // every restart after the first successful run, that column is already
+    // gone (migrated below) and regions is already populated - so this
+    // becomes a safe no-op instead of erroring on the dropped column.
+    await client.query(`
+      DO $$
+      BEGIN
+        IF EXISTS (
+          SELECT 1 FROM information_schema.columns
+          WHERE table_name = 'locations' AND column_name = 'region'
+        ) THEN
+          INSERT INTO regions (name)
+          SELECT DISTINCT region FROM locations WHERE region IS NOT NULL
+          ON CONFLICT (name) DO NOTHING;
+        END IF;
+      END $$;
+    `);
+
+    // Normalize locations.region (free text) into locations.region_id (FK).
+    // Must run after the regions table is seeded above, and before the
+    // clients migration below (which relies on locations.region_id).
+    await client.query(`
+      DO $$
+      BEGIN
+        IF EXISTS (
+          SELECT 1 FROM information_schema.columns
+          WHERE table_name = 'locations' AND column_name = 'region'
+        ) THEN
+          IF NOT EXISTS (
+            SELECT 1 FROM information_schema.columns
+            WHERE table_name = 'locations' AND column_name = 'region_id'
+          ) THEN
+            ALTER TABLE locations ADD COLUMN region_id INTEGER REFERENCES regions(id);
+
+            UPDATE locations l
+            SET region_id = r.id
+            FROM regions r
+            WHERE l.region = r.name AND l.region_id IS NULL;
+          END IF;
+
+          ALTER TABLE locations ALTER COLUMN region_id SET NOT NULL;
+          ALTER TABLE locations DROP COLUMN region;
+        END IF;
+      END $$;
+    `);
+
+    // A client can have a region on file without a specific location picked,
+    // so region_id lives on clients directly rather than only via location_id.
+    await client.query(`
+      DO $$
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM information_schema.columns
+          WHERE table_name = 'clients' AND column_name = 'region_id'
+        ) THEN
+          ALTER TABLE clients ADD COLUMN region_id INTEGER REFERENCES regions(id);
+
+          IF EXISTS (
+            SELECT 1 FROM information_schema.columns
+            WHERE table_name = 'clients' AND column_name = 'region'
+          ) THEN
+            -- Migrate off the earlier free-text region column, if it exists.
+            UPDATE clients c
+            SET region_id = r.id
+            FROM regions r
+            WHERE c.region = r.name AND c.region_id IS NULL;
+
+            ALTER TABLE clients DROP COLUMN region;
+          ELSE
+            UPDATE clients c
+            SET region_id = l.region_id
+            FROM locations l
+            WHERE c.location_id = l.id AND c.region_id IS NULL;
+          END IF;
+        END IF;
+      END $$;
+    `);
+
     // ========================
     // 5. MACHINES TABLE (with installation_date)
     // ========================
@@ -590,8 +680,8 @@ CREATE TABLE IF NOT EXISTS audit_logs (
 
     // Locations indexes
     await client.query(`
-      CREATE INDEX IF NOT EXISTS idx_locations_region 
-      ON locations(region);
+      CREATE INDEX IF NOT EXISTS idx_locations_region_id
+      ON locations(region_id);
     `);
 
     await client.query(`

@@ -204,7 +204,7 @@ const formatLogMessage = (log, nameCache = {}) => {
   
   const after = safeParse(log.after);
   const before = safeParse(log.before);
-  
+
   console.log("Parsed after:", after);
   console.log("Parsed before:", before);
   console.log("Name cache keys available:", Object.keys(nameCache).slice(0, 20));
@@ -1767,6 +1767,8 @@ if (loading) {
           display: flex;
           justify-content: space-between;
           align-items: center;
+          flex-wrap: wrap;
+          gap: 12px;
           margin-top: 20px;
           padding-top: 16px;
           border-top: 1px solid #f1f5f9;
@@ -1836,6 +1838,7 @@ if (loading) {
           display: flex;
           align-items: center;
           justify-content: space-between;
+          flex-wrap: wrap;
           gap: 12px;
           margin-bottom: 24px;
           background: white;
@@ -1977,6 +1980,9 @@ if (loading) {
 
         /* Entity badges */
         .entity-badge {
+          display: inline-flex;
+          align-items: center;
+          gap: 4px;
           padding: 4px 10px;
           border-radius: 6px;
           font-size: 12px;
@@ -2291,6 +2297,39 @@ if (loading) {
         /* Animations */
         @keyframes spin {
           to { transform: rotate(360deg); }
+        }
+
+        /* Small phones */
+        @media (max-width: 480px) {
+          .pagination-info {
+            order: -1;
+            width: 100%;
+            flex: none;
+          }
+
+          .pagination-btn {
+            flex: 1;
+            min-width: 0;
+          }
+
+          .export-buttons {
+            width: 100%;
+            flex-direction: column;
+          }
+
+          .export-btn {
+            width: 100%;
+            justify-content: center;
+          }
+
+          .log-card {
+            padding: 16px;
+          }
+
+          .log-details {
+            padding-left: 0;
+            overflow-wrap: break-word;
+          }
         }
 
         /* Print styles */
